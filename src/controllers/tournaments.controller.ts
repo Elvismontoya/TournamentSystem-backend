@@ -65,6 +65,24 @@ export const addPlayer: RequestHandler = (request, response) => {
   response.status(201).json(result);
 };
 
+const playerId = (request: Request) => textParam(request, 'playerId');
+
+export const updatePlayer: RequestHandler = (request, response) => {
+  const data = body(request);
+  response.json(
+    service.updatePlayer(id(request), playerId(request), {
+      name: str(data.name, 'name'),
+      delegation: optionalStr(data.delegation, 'delegation'),
+      ranking: intOrNull(data.ranking, 'ranking'),
+      bib: int(data.bib, 'bib'),
+    }),
+  );
+};
+
+export const removePlayer: RequestHandler = (request, response) => {
+  response.json(service.removePlayer(id(request), playerId(request)));
+};
+
 /** With { dryRun: true } it only reads the list and returns what would be imported. */
 export const importPlayers: RequestHandler = (request, response) => {
   const data = body(request);

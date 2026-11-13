@@ -15,6 +15,8 @@ tournamentsRouter.put(`${base}/configuracion`, controller.updateSettings);
 // Registration
 tournamentsRouter.post(`${base}/participantes`, controller.addPlayer);
 tournamentsRouter.post(`${base}/participantes/importar`, controller.importPlayers);
+tournamentsRouter.put(`${base}/participantes/:playerId`, controller.updatePlayer);
+tournamentsRouter.delete(`${base}/participantes/:playerId`, controller.removePlayer);
 
 // Group stage
 tournamentsRouter.get(`${base}/grupos/vista-previa`, controller.previewGroupDraw);

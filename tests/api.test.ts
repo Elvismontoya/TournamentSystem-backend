@@ -155,6 +155,53 @@ describe('API del torneo', () => {
     assert.equal(view.groupStage.groups[0].finished, 0);
   });
 
+  it('edita un jugador: el cambio se ve también en su grupo', async () => {
+    const before = (await call('GET', '')).data as unknown as View;
+    const target = before.groupStage?.groups[0].players[0];
+    assert.ok(target);
+    const taken = await call('PUT', `/participantes/${target.id}`, {
+      name: 'Otro nombre',
+      delegation: 'Club',
+      ranking: 1000,
+      bib: 12, // Marcos Ruiz
+    });
+    assert.equal(taken.status, 409);
+
+    const { status, data } = await call('PUT', `/participantes/${target.id}`, {
+      name: 'Nombre Editado',
+      delegation: 'Club Editado',
+      ranking: 1,
+      bib: 99,
+    });
+    const view = data as unknown as View;
+    assert.equal(status, 200);
+    const edited = view.players.find((player) => player.id === target.id);
+    assert.ok(edited);
+    assert.equal(edited.name, 'Nombre Editado');
+    assert.equal(edited.bib, 99);
+    assert.equal(
+      (view.groupStage?.groups[0].players[0] as { name?: string } | undefined)?.name,
+      'Nombre Editado',
+    );
+  });
+
+  it('elimina solo a jugadores sin grupo', async () => {
+    const before = (await call('GET', '')).data as unknown as View;
+    const inGroup = before.groupStage?.groups[0].players[0];
+    assert.ok(inGroup);
+    const blocked = await call('DELETE', `/participantes/${inGroup.id}`);
+    assert.equal(blocked.status, 409);
+
+    const added = await call('POST', '/participantes', { name: 'Sin Grupo', ranking: null });
+    const newcomer = added.data.added as { id: string };
+    const removed = await call('DELETE', `/participantes/${newcomer.id}`);
+    const view = removed.data as unknown as View;
+    assert.equal(removed.status, 200);
+    assert.equal(view.players.length, before.players.length);
+    assert.equal(view.groupStage?.withoutGroup.length, 0);
+    assert.equal((await call('DELETE', `/participantes/${newcomer.id}`)).status, 404);
+  });
+
   it('sortea las llaves y mueve una posición a mano', async () => {
     const drawn = (await call('POST', '/llaves/sorteo')).data as unknown as View;
     assert.ok(drawn.knockout);

@@ -7,6 +7,7 @@ import {
   drawGroups,
   emptySets,
   groupCountFor,
+  locatePlayer,
   matchKey,
   MAX_GROUP_SIZE,
   MIN_GROUP_SIZE,
@@ -299,6 +300,56 @@ export function addPlayer(
   validateNewPlayer(entry, tournament.players);
   const [added] = register(tournament, [entry]);
   return { view: save(tournament), added };
+}
+
+function requirePlayer(tournament: Tournament, playerId: string): Player {
+  const player = tournament.players.find((candidate) => candidate.id === playerId);
+  if (!player) throw new HttpError(404, 'Jugador no encontrado.');
+  return player;
+}
+
+/**
+ * Edits a registered player. Groups hold the same Player objects, so the change shows
+ * everywhere; results don't depend on name, Nr. or ranking, so nothing else changes.
+ */
+export function updatePlayer(
+  tournamentId: string,
+  playerId: string,
+  entry: NewPlayer & { bib: number },
+): TournamentView {
+  const tournament = load(tournamentId);
+  const player = requirePlayer(tournament, playerId);
+  validateNewPlayer(
+    entry,
+    tournament.players.filter((candidate) => candidate !== player),
+  );
+  Object.assign(player, {
+    name: entry.name.trim(),
+    delegation: entry.delegation.trim(),
+    ranking: entry.ranking,
+    bib: entry.bib,
+  });
+  tournament.players = sortByRanking(tournament.players);
+  return save(tournament);
+}
+
+/**
+ * Removes a registered player who isn't in any group (before the draw, or "sin grupo").
+ * A player in a group must be taken out first: their group's matches would change.
+ */
+export function removePlayer(tournamentId: string, playerId: string): TournamentView {
+  const tournament = load(tournamentId);
+  const player = requirePlayer(tournament, playerId);
+  const place = tournament.groups ? locatePlayer(tournament.groups, player) : null;
+  if (tournament.groups && place) {
+    const group = tournament.groups[place.groupIndex];
+    throw new HttpError(
+      409,
+      `${player.name} está en el Grupo ${group.name}: sácalo del grupo (Grupos → Editar) o vuelve a sortear antes de eliminarlo.`,
+    );
+  }
+  tournament.players = tournament.players.filter((candidate) => candidate !== player);
+  return save(tournament);
 }
 
 /**
