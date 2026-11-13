@@ -15,8 +15,6 @@ export interface TournamentSettings {
   startDate: string | null;
   endDate: string | null;
   location: string;
-  /** Courts or tables available at the venue, or null if not set. */
-  courts: number | null;
 
   /* Format */
   participantType: string;

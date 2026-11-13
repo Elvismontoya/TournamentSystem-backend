@@ -93,7 +93,6 @@ export interface SettingsUpdate {
   startDate: string | null;
   endDate: string | null;
   location: string;
-  courts: number | null;
   participantType: string;
   format: string;
   capacity: number;
@@ -158,10 +157,6 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
   if (startDate && endDate && endDate < startDate) {
     throw new HttpError(400, 'La fecha de fin no puede ser anterior a la de inicio.');
   }
-  const courts =
-    update.courts === null
-      ? null
-      : intIn(update.courts, 1, 999, 'Las canchas o mesas deben ser un número entre 1 y 999.');
 
   const registered = tournament.players.length;
   const capacity = intIn(
@@ -230,7 +225,6 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
     startDate,
     endDate,
     location: text(update.location, 'El lugar'),
-    courts,
     participantType: text(update.participantType, 'El tipo de participantes'),
     format: text(update.format, 'El formato'),
     capacity,

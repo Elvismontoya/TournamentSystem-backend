@@ -31,7 +31,6 @@ export const EXAMPLE_SETTINGS: TournamentSettings = {
   startDate: '2026-11-15',
   endDate: '2026-11-16',
   location: 'Coliseo Central',
-  courts: 8,
   participantType: 'Individual',
   format: 'Grupos + eliminación',
   capacity: 32,

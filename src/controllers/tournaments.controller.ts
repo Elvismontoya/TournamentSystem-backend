@@ -32,7 +32,6 @@ export const updateSettings: RequestHandler = (request, response) => {
       startDate: strOrNull(data.startDate, 'startDate'),
       endDate: strOrNull(data.endDate, 'endDate'),
       location: optionalStr(data.location, 'location'),
-      courts: intOrNull(data.courts, 'courts'),
       participantType: optionalStr(data.participantType, 'participantType'),
       format: optionalStr(data.format, 'format'),
       capacity: int(data.capacity, 'capacity'),

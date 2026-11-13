@@ -179,7 +179,6 @@ describe('Configuración del torneo', () => {
     startDate: '2026-11-20',
     endDate: '2026-11-21',
     location: 'Coliseo Norte',
-    courts: 6,
     participantType: 'Individual',
     format: 'Grupos + eliminación',
     capacity: 40,

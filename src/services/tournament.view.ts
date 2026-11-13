@@ -46,7 +46,6 @@ export interface SettingsView {
   startDate: string | null;
   endDate: string | null;
   location: string;
-  courts: number | null;
   participantType: string;
   format: string;
   capacity: number;
@@ -174,7 +173,6 @@ function settingsOf(tournament: Tournament): SettingsView {
     startDate: settings.startDate,
     endDate: settings.endDate,
     location: settings.location,
-    courts: settings.courts,
     participantType: settings.participantType,
     format: settings.format,
     capacity: settings.capacity,
