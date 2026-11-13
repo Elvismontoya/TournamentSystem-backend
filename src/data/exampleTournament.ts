@@ -1,7 +1,9 @@
 // Seed data: the table tennis sample tournament the frontend shows ("Open Nacional 2026").
 // Loaded into the in-memory repository at startup; later it becomes a database seeder.
 
+import { DEFAULT_GROUP_SIZE, DEFAULT_RULES } from '../domain/groupStage.ts';
 import type { Player } from '../domain/players.ts';
+import type { TournamentSettings } from '../models/tournament.ts';
 
 /** Listed by ranking; `bib` is the registration number (Nr.), independent of ranking. */
 export const EXAMPLE_PLAYERS: Player[] = [
@@ -23,11 +25,24 @@ export const EXAMPLE_PLAYERS: Player[] = [
   { id: 'p16', bib: 8, name: 'Gabriel Ramos', delegation: 'Academia Spin', ranking: null },
 ];
 
+export const EXAMPLE_SETTINGS: TournamentSettings = {
+  sport: 'Tenis de mesa',
+  category: 'Individual masculino',
+  startDate: '2026-11-15',
+  endDate: '2026-11-16',
+  location: 'Coliseo Central',
+  courts: 8,
+  participantType: 'Individual',
+  format: 'Grupos + eliminación',
+  capacity: 32,
+  defaultGroupSize: DEFAULT_GROUP_SIZE,
+  qualifiersPerGroup: 2,
+  seeded: true,
+  groupRules: DEFAULT_RULES,
+  knockoutSetsPerMatch: 7,
+};
+
 export const EXAMPLE_TOURNAMENT = {
   id: 'open-nacional-2026',
   name: 'Open Nacional 2026',
-  /** Places ("cupos"). */
-  capacity: 32,
-  /** Players per group that advance to the knockout stage. */
-  qualifiersPerGroup: 2,
 } as const;

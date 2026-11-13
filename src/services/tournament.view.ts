@@ -3,9 +3,9 @@
 // has to show it. These shapes are the API contract (copied in the frontend's api/types.ts).
 
 import {
+  anyResults,
   computeGroupTable,
   countFinished,
-  DEFAULT_GROUP_SIZE,
   emptySets,
   getQualifiers,
   groupCountFor,
@@ -18,8 +18,7 @@ import {
   MIN_GROUP_SIZE,
   pairingsFor,
   setNotation,
-  SETS_PER_MATCH,
-  SETS_TO_WIN,
+  setsToWin,
   setWinner,
   summarizeMatch,
   type GroupTable,
@@ -31,14 +30,35 @@ import { bracketSize, type KnockoutDraw } from '../domain/knockout.ts';
 import { nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
 import type { Tournament } from '../models/tournament.ts';
 
+/** Tournament settings plus limits, flattened for the frontend (Configuración and the rest). */
 export interface SettingsView {
+  sport: string;
+  category: string;
+  startDate: string | null;
+  endDate: string | null;
+  location: string;
+  courts: number | null;
+  participantType: string;
+  format: string;
+  capacity: number;
+  /** Lowest capacity allowed (players already registered, at least 2). */
+  minCapacity: number;
   minGroupSize: number;
   maxGroupSize: number;
   defaultGroupSize: number;
   qualifiersPerGroup: number;
+  seeded: boolean;
+  /** Group matches: best of N sets. */
   setsPerMatch: number;
   setsToWin: number;
-  capacity: number;
+  gamePoints: number;
+  winMargin: number;
+  knockoutSetsPerMatch: number;
+  pointsWin: number;
+  pointsLoss: number;
+  pointsWalkover: number;
+  /** Results were entered: match rules (sets, points per set, margin) can't change. */
+  rulesLocked: boolean;
 }
 
 export interface MatchView {
@@ -106,25 +126,44 @@ export interface DrawPreview {
 }
 
 function settingsOf(tournament: Tournament): SettingsView {
+  const { groupRules: rules, ...settings } = tournament.settings;
   return {
+    sport: settings.sport,
+    category: settings.category,
+    startDate: settings.startDate,
+    endDate: settings.endDate,
+    location: settings.location,
+    courts: settings.courts,
+    participantType: settings.participantType,
+    format: settings.format,
+    capacity: settings.capacity,
+    minCapacity: Math.max(2, tournament.players.length),
     minGroupSize: MIN_GROUP_SIZE,
     maxGroupSize: MAX_GROUP_SIZE,
-    defaultGroupSize: DEFAULT_GROUP_SIZE,
-    qualifiersPerGroup: tournament.qualifiersPerGroup,
-    setsPerMatch: SETS_PER_MATCH,
-    setsToWin: SETS_TO_WIN,
-    capacity: tournament.capacity,
+    defaultGroupSize: settings.defaultGroupSize,
+    qualifiersPerGroup: settings.qualifiersPerGroup,
+    seeded: settings.seeded,
+    setsPerMatch: rules.setsPerMatch,
+    setsToWin: setsToWin(rules),
+    gamePoints: rules.gamePoints,
+    winMargin: rules.winMargin,
+    knockoutSetsPerMatch: settings.knockoutSetsPerMatch,
+    pointsWin: rules.points.win,
+    pointsLoss: rules.points.loss,
+    pointsWalkover: rules.points.walkover,
+    rulesLocked: anyResults(tournament.results),
   };
 }
 
 function groupStageOf(tournament: Tournament): GroupStageView | null {
-  const { groups, results, qualifiersPerGroup } = tournament;
+  const { groups, results } = tournament;
+  const { qualifiersPerGroup, groupRules: rules } = tournament.settings;
   if (!groups) return null;
 
   const views = groups.map((group, groupIndex): GroupView => {
-    const finished = countFinished(group, groupIndex, results);
+    const finished = countFinished(group, groupIndex, results, rules);
     const total = matchCount(group);
-    const table = computeGroupTable(group, groupIndex, results);
+    const table = computeGroupTable(group, groupIndex, results, rules);
     const unresolved = table.rows.filter((row) => row.tieUnresolved);
     return {
       name: group.name,
@@ -134,10 +173,10 @@ function groupStageOf(tournament: Tournament): GroupStageView | null {
         return {
           index,
           players: pair,
-          result: result ?? { sets: emptySets() },
-          summary: summarizeMatch(result),
-          setWinners: (result?.sets ?? emptySets()).map(setWinner),
-          notation: [setNotation(result, 0), setNotation(result, 1)],
+          result: result ?? { sets: emptySets(rules) },
+          summary: summarizeMatch(result, rules),
+          setWinners: (result?.sets ?? emptySets(rules)).map((set) => setWinner(set, rules)),
+          notation: [setNotation(result, 0, rules), setNotation(result, 1, rules)],
         };
       }),
       table,
@@ -145,7 +184,7 @@ function groupStageOf(tournament: Tournament): GroupStageView | null {
       total,
       complete: finished === total,
       hasResults: groupHasResults(groupIndex, results),
-      qualifiers: getQualifiers(group, groupIndex, results, qualifiersPerGroup).map(
+      qualifiers: getQualifiers(group, groupIndex, results, qualifiersPerGroup, rules).map(
         (row) => row?.player ?? null,
       ),
       qualificationPending:
@@ -166,10 +205,13 @@ function groupStageOf(tournament: Tournament): GroupStageView | null {
 }
 
 /** Seeds: before the draw, the top of the ranking for the default group size; after it,
- * the best-ranked players among those in a group, one per group. */
+ * the best-ranked players among those in a group, one per group. None if seeding is off. */
 function seedsOf(tournament: Tournament): Player[] {
-  const { groups, players } = tournament;
-  if (!groups) return players.slice(0, groupCountFor(players.length, DEFAULT_GROUP_SIZE));
+  const { groups, players, settings } = tournament;
+  if (!settings.seeded) return [];
+  if (!groups) {
+    return players.slice(0, groupCountFor(players.length, settings.defaultGroupSize));
+  }
   return sortByRanking(groups.flatMap((group) => group.players)).slice(0, groups.length);
 }
 
@@ -186,14 +228,14 @@ export function tournamentView(tournament: Tournament): TournamentView {
   };
 }
 
-export function drawPreview(players: Player[], groupSize: number): DrawPreview {
+export function drawPreview(players: Player[], groupSize: number, seeded = true): DrawPreview {
   const groupCount = groupCountFor(players.length, groupSize);
   const sizes = groupSizes(players.length, groupCount);
   return {
     groupSize,
     groupCount,
     sizes,
-    seeds: sortByRanking(players).slice(0, groupCount),
+    seeds: seeded ? sortByRanking(players).slice(0, groupCount) : [],
     orders: [...new Set(sizes)]
       .sort((a, b) => a - b)
       .map((size) => ({ size, pairs: [...pairingsFor(size)] })),

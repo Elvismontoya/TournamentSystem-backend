@@ -2,6 +2,7 @@
 // Every action returns the updated view, so the frontend always shows the server's state.
 
 import {
+  anyResults,
   drawGroups,
   emptySets,
   groupCountFor,
@@ -10,7 +11,6 @@ import {
   MIN_GROUP_SIZE,
   pairingsFor,
   replaceGroupPlayers,
-  SETS_PER_MATCH,
   type MatchResult,
 } from '../domain/groupStage.ts';
 import { drawKnockout, moveSlot, type BracketSlot } from '../domain/knockout.ts';
@@ -23,7 +23,11 @@ import {
 } from '../domain/players.ts';
 import { HttpError } from '../httpError.ts';
 import type { Tournament } from '../models/tournament.ts';
-import { findTournament, saveTournament } from '../repositories/tournament.repository.ts';
+import {
+  deleteTournament as removeTournament,
+  findTournament,
+  saveTournament,
+} from '../repositories/tournament.repository.ts';
 import {
   drawPreview,
   tournamentView,
@@ -43,11 +47,7 @@ function save(tournament: Tournament): TournamentView {
 }
 
 function hasResults(tournament: Tournament): boolean {
-  return Object.values(tournament.results).some(
-    (result) =>
-      result?.walkover !== undefined ||
-      result?.sets.some(([first, second]) => first !== null || second !== null),
-  );
+  return anyResults(tournament.results);
 }
 
 function requireGroups(tournament: Tournament) {
@@ -57,6 +57,169 @@ function requireGroups(tournament: Tournament) {
 
 export function getTournament(tournamentId: string): TournamentView {
   return tournamentView(load(tournamentId));
+}
+
+/* ---------- Settings ---------- */
+
+/** What Configuración sends: the name plus every editable setting (flat). */
+export interface SettingsUpdate {
+  name: string;
+  sport: string;
+  category: string;
+  startDate: string | null;
+  endDate: string | null;
+  location: string;
+  courts: number | null;
+  participantType: string;
+  format: string;
+  capacity: number;
+  defaultGroupSize: number;
+  seeded: boolean;
+  setsPerMatch: number;
+  gamePoints: number;
+  winMargin: number;
+  knockoutSetsPerMatch: number;
+  pointsWin: number;
+  pointsLoss: number;
+  pointsWalkover: number;
+}
+
+const MAX_TEXT = 100;
+const MAX_CAPACITY = 1024;
+
+function text(value: string, label: string, required = false): string {
+  const trimmed = value.trim();
+  if (required && trimmed === '') throw new HttpError(400, `Escribe ${label}.`);
+  if (trimmed.length > MAX_TEXT) {
+    throw new HttpError(400, `${label} admite hasta ${String(MAX_TEXT)} caracteres.`);
+  }
+  return trimmed;
+}
+
+function intIn(value: number, min: number, max: number, message: string): number {
+  if (!Number.isInteger(value) || value < min || value > max) throw new HttpError(400, message);
+  return value;
+}
+
+function isoDate(value: string | null, label: string): string | null {
+  if (value === null || value.trim() === '') return null;
+  const date = new Date(`${value}T00:00:00Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(date.getTime())) {
+    throw new HttpError(400, `La ${label} no es una fecha válida (AAAA-MM-DD).`);
+  }
+  if (date.toISOString().slice(0, 10) !== value) {
+    throw new HttpError(400, `La ${label} no existe en el calendario.`);
+  }
+  return value;
+}
+
+function bestOf(value: number, label: string): number {
+  if (!Number.isInteger(value) || value < 1 || value > 9 || value % 2 === 0) {
+    throw new HttpError(400, `${label}: los partidos son al mejor de 1, 3, 5, 7 o 9 sets.`);
+  }
+  return value;
+}
+
+/**
+ * Saves Configuración. Match rules (sets per match, points per set, margin) can't change
+ * once results are entered, since they decide who won each match already played.
+ */
+export function updateSettings(tournamentId: string, update: SettingsUpdate): TournamentView {
+  const tournament = load(tournamentId);
+  const current = tournament.settings;
+
+  const name = text(update.name, 'el nombre del torneo', true);
+  const startDate = isoDate(update.startDate, 'fecha de inicio');
+  const endDate = isoDate(update.endDate, 'fecha de fin');
+  if (startDate && endDate && endDate < startDate) {
+    throw new HttpError(400, 'La fecha de fin no puede ser anterior a la de inicio.');
+  }
+  const courts =
+    update.courts === null
+      ? null
+      : intIn(update.courts, 1, 999, 'Las canchas o mesas deben ser un número entre 1 y 999.');
+
+  const registered = tournament.players.length;
+  const capacity = intIn(
+    update.capacity,
+    2,
+    MAX_CAPACITY,
+    `Los cupos deben ser un número entre 2 y ${String(MAX_CAPACITY)}.`,
+  );
+  if (capacity < registered) {
+    throw new HttpError(
+      409,
+      `Ya hay ${String(registered)} inscritos: los cupos no pueden ser menos.`,
+    );
+  }
+  const defaultGroupSize = intIn(
+    update.defaultGroupSize,
+    MIN_GROUP_SIZE,
+    MAX_GROUP_SIZE,
+    `Los grupos deben ser de ${String(MIN_GROUP_SIZE)} a ${String(MAX_GROUP_SIZE)} jugadores.`,
+  );
+
+  const setsPerMatch = bestOf(update.setsPerMatch, 'Fase de grupos');
+  const knockoutSetsPerMatch = bestOf(update.knockoutSetsPerMatch, 'Llaves');
+  const gamePoints = intIn(update.gamePoints, 1, 99, 'Los puntos por set van de 1 a 99.');
+  const winMargin = intIn(
+    update.winMargin,
+    1,
+    Math.min(10, gamePoints),
+    'La diferencia mínima va de 1 a 10 y no puede superar los puntos por set.',
+  );
+
+  const pointsWin = intIn(update.pointsWin, 0, 99, 'Los puntos por victoria van de 0 a 99.');
+  const pointsLoss = intIn(update.pointsLoss, 0, 99, 'Los puntos por derrota van de 0 a 99.');
+  const pointsWalkover = intIn(update.pointsWalkover, 0, 99, 'Los puntos por W.O. van de 0 a 99.');
+  if (pointsWin <= pointsLoss) {
+    throw new HttpError(400, 'La victoria debe dar más puntos que la derrota.');
+  }
+  if (pointsWalkover > pointsLoss) {
+    throw new HttpError(400, 'El W.O. no puede dar más puntos que una derrota jugada.');
+  }
+
+  const rules = current.groupRules;
+  const rulesChanged =
+    setsPerMatch !== rules.setsPerMatch ||
+    gamePoints !== rules.gamePoints ||
+    winMargin !== rules.winMargin;
+  if (rulesChanged && hasResults(tournament)) {
+    throw new HttpError(
+      409,
+      'Ya hay resultados cargados: los sets por partido, los puntos por set y la diferencia mínima no se pueden cambiar.',
+    );
+  }
+
+  tournament.name = name;
+  tournament.settings = {
+    ...current,
+    sport: text(update.sport, 'El deporte'),
+    category: text(update.category, 'La categoría'),
+    startDate,
+    endDate,
+    location: text(update.location, 'El lugar'),
+    courts,
+    participantType: text(update.participantType, 'El tipo de participantes'),
+    format: text(update.format, 'El formato'),
+    capacity,
+    defaultGroupSize,
+    seeded: update.seeded,
+    groupRules: {
+      setsPerMatch,
+      gamePoints,
+      winMargin,
+      points: { win: pointsWin, loss: pointsLoss, walkover: pointsWalkover },
+    },
+    knockoutSetsPerMatch,
+  };
+  // No results yet: empty scoresheets must match the (possibly new) number of sets.
+  if (setsPerMatch !== rules.setsPerMatch) tournament.results = {};
+  return save(tournament);
+}
+
+export function deleteTournament(tournamentId: string): void {
+  if (!removeTournament(tournamentId)) throw new HttpError(404, 'Torneo no encontrado.');
 }
 
 /* ---------- Registration ---------- */
@@ -76,7 +239,7 @@ function validateNewPlayer(entry: NewPlayer, players: Player[]): void {
 }
 
 function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
-  const remaining = tournament.capacity - tournament.players.length;
+  const remaining = tournament.settings.capacity - tournament.players.length;
   if (entries.length > remaining) {
     throw new HttpError(
       409,
@@ -152,7 +315,8 @@ function validateGroupSize(groupSize: number): void {
 
 export function previewGroupDraw(tournamentId: string, groupSize: number): DrawPreview {
   validateGroupSize(groupSize);
-  return drawPreview(load(tournamentId).players, groupSize);
+  const tournament = load(tournamentId);
+  return drawPreview(tournament.players, groupSize, tournament.settings.seeded);
 }
 
 export function drawTournamentGroups(tournamentId: string, groupSize: number): TournamentView {
@@ -167,6 +331,8 @@ export function drawTournamentGroups(tournamentId: string, groupSize: number): T
   tournament.groups = drawGroups(
     tournament.players,
     groupCountFor(tournament.players.length, groupSize),
+    Math.random,
+    tournament.settings.seeded,
   );
   tournament.results = {};
   tournament.knockout = null; // a new group draw invalidates the bracket draw
@@ -233,13 +399,14 @@ export function updateSet(
 ): TournamentView {
   const tournament = load(tournamentId);
   const key = requireMatch(tournament, groupIndex, matchIndex);
-  if (!Number.isInteger(setIndex) || setIndex < 0 || setIndex >= SETS_PER_MATCH) {
+  const rules = tournament.settings.groupRules;
+  if (!Number.isInteger(setIndex) || setIndex < 0 || setIndex >= rules.setsPerMatch) {
     throw new HttpError(404, 'Set no encontrado.');
   }
-  if (value !== null && (!Number.isInteger(value) || value < 0 || value > 99)) {
-    throw new HttpError(400, 'Los puntos de un set van de 0 a 99.');
+  if (value !== null && (!Number.isInteger(value) || value < 0 || value > 999)) {
+    throw new HttpError(400, 'Los puntos de un set van de 0 a 999.');
   }
-  const current: MatchResult = tournament.results[key] ?? { sets: emptySets() };
+  const current: MatchResult = tournament.results[key] ?? { sets: emptySets(rules) };
   if (current.walkover !== undefined) {
     throw new HttpError(409, 'El partido está marcado como W.O.: deshazlo para cargar sets.');
   }
@@ -265,10 +432,11 @@ export function setWalkover(
 ): TournamentView {
   const tournament = load(tournamentId);
   const key = requireMatch(tournament, groupIndex, matchIndex);
+  const sets = emptySets(tournament.settings.groupRules);
   // A walkover replaces any sets entered; undoing it starts from an empty scoresheet.
   tournament.results = {
     ...tournament.results,
-    [key]: absent === null ? { sets: emptySets() } : { sets: emptySets(), walkover: absent },
+    [key]: absent === null ? { sets } : { sets, walkover: absent },
   };
   return save(tournament);
 }

@@ -97,6 +97,31 @@ describe('sets y partidos', () => {
     assert.equal(setWinner([null, 11]), null);
   });
 
+  it('setWinner con otras reglas: sets a 21 y diferencia de 1', () => {
+    const rules = {
+      setsPerMatch: 3,
+      gamePoints: 21,
+      winMargin: 1,
+      points: { win: 2, loss: 1, walkover: 0 },
+    };
+    assert.equal(setWinner([21, 20], rules), 0);
+    assert.equal(setWinner([22, 20], rules), null);
+    assert.equal(setWinner([11, 9], rules), null);
+    assert.equal(
+      summarizeMatch(
+        {
+          sets: [
+            [21, 3],
+            [21, 4],
+            [null, null],
+          ],
+        },
+        rules,
+      ).finished,
+      true,
+    );
+  });
+
   it('un W.O. cuenta como 3-0 y 33-0', () => {
     const summary = summarizeMatch({ sets: [], walkover: 1 });
     assert.equal(summary.winner, 0);

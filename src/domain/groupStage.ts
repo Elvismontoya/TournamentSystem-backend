@@ -92,20 +92,37 @@ export function groupSizes(players: number, groupCount: number): number[] {
   return Array.from({ length: groupCount }, (_, index) => base + (index < extra ? 1 : 0));
 }
 
-export const SETS_PER_MATCH = 5; // best of 5
-export const SETS_TO_WIN = 3;
-const GAME_POINTS = 11;
-const POINTS_FOR_WIN = 2;
-const POINTS_FOR_LOSS = 1;
-/** Group points for the player who didn't show up (Configuración: "No presentado (W.O.)"). */
-const POINTS_FOR_WALKOVER = 0;
+/** How a group match is played and scored (set in the tournament's Configuración). */
+export interface GroupRules {
+  /** Best of N sets (odd). */
+  setsPerMatch: number;
+  /** Points to win a set. */
+  gamePoints: number;
+  /** Minimum lead to win a set (2 = "deuce" past gamePoints - 1). */
+  winMargin: number;
+  /** Group points per result. */
+  points: { win: number; loss: number; walkover: number };
+}
+
+/** ITTF defaults: best of 5, sets to 11 by 2; win 2, loss 1, no-show 0. */
+export const DEFAULT_RULES: GroupRules = {
+  setsPerMatch: 5,
+  gamePoints: 11,
+  winMargin: 2,
+  points: { win: 2, loss: 1, walkover: 0 },
+};
+
+/** Sets needed to win a best-of-`setsPerMatch` match. */
+export function setsToWin(rules: GroupRules): number {
+  return Math.ceil(rules.setsPerMatch / 2);
+}
 
 export function matchKey(groupIndex: number, matchIndex: number): string {
   return `${String(groupIndex)}-${String(matchIndex)}`;
 }
 
-export function emptySets(): SetScore[] {
-  return Array.from({ length: SETS_PER_MATCH }, (): SetScore => [null, null]);
+export function emptySets(rules: GroupRules = DEFAULT_RULES): SetScore[] {
+  return Array.from({ length: rules.setsPerMatch }, (): SetScore => [null, null]);
 }
 
 function shuffle<T>(items: T[], random: () => number): T[] {
@@ -120,30 +137,40 @@ function shuffle<T>(items: T[], random: () => number): T[] {
 /**
  * Seeded random draw: the top `groupCount` players by ranking head one group each
  * (seed 1 → group 1, seed 2 → group 2…); everyone else is shuffled and dealt in turn.
+ * With `seeded` false nobody is placed by ranking: everyone is shuffled and dealt.
  */
 export function drawGroups(
   players: Player[],
   groupCount: number,
   random: () => number = Math.random,
+  seeded = true,
 ): Group[] {
   const byRanking = sortByRanking(players);
-  const groups: Group[] = byRanking.slice(0, groupCount).map((seed, index) => ({
+  const seeds = seeded ? byRanking.slice(0, groupCount) : [];
+  const groups: Group[] = Array.from({ length: groupCount }, (_, index) => ({
     name: String(index + 1),
-    players: [seed],
+    players: seeds[index] ? [seeds[index]] : [],
   }));
-  shuffle(byRanking.slice(groupCount), random).forEach((player, index) => {
+  shuffle(byRanking.slice(seeds.length), random).forEach((player, index) => {
     groups[index % groupCount]?.players.push(player);
   });
   return groups;
 }
 
 /** Index of the set winner (0 or 1), or null if the score isn't a valid finished set. */
-export function setWinner([first, second]: SetScore): 0 | 1 | null {
+export function setWinner(
+  [first, second]: SetScore,
+  rules: GroupRules = DEFAULT_RULES,
+): 0 | 1 | null {
   if (first === null || second === null) return null;
+  const { gamePoints, winMargin } = rules;
   const high = Math.max(first, second);
   const low = Math.min(first, second);
+  // Reaching gamePoints wins with the margin; past it, only by exactly the margin.
   const valid =
-    high === GAME_POINTS ? low <= GAME_POINTS - 2 : high > GAME_POINTS && high - low === 2;
+    high === gamePoints
+      ? low <= gamePoints - winMargin
+      : high > gamePoints && high - low === winMargin;
   if (!valid) return null;
   return first > second ? 0 : 1;
 }
@@ -162,17 +189,18 @@ export interface MatchSummary {
   walkover: boolean;
 }
 
-/** A walkover counts as 3-0 in sets, 11-0 each, for tie-breaks (common regulation). */
-function walkoverSummary(absent: 0 | 1): MatchSummary {
+/** A walkover counts as a straight win (e.g. 3-0, 11-0 each) for tie-breaks (common regulation). */
+function walkoverSummary(absent: 0 | 1, rules: GroupRules): MatchSummary {
   const winner = absent === 0 ? 1 : 0;
+  const toWin = setsToWin(rules);
   const sets: [number, number] = [0, 0];
   const points: [number, number] = [0, 0];
-  sets[winner] = SETS_TO_WIN;
-  points[winner] = GAME_POINTS * SETS_TO_WIN;
+  sets[winner] = toWin;
+  points[winner] = rules.gamePoints * toWin;
   return {
     sets,
     points,
-    decidedSets: SETS_TO_WIN,
+    decidedSets: toWin,
     started: true,
     finished: true,
     winner,
@@ -180,9 +208,13 @@ function walkoverSummary(absent: 0 | 1): MatchSummary {
   };
 }
 
-export function summarizeMatch(result: MatchResult | undefined): MatchSummary {
-  if (result?.walkover !== undefined) return walkoverSummary(result.walkover);
+export function summarizeMatch(
+  result: MatchResult | undefined,
+  rules: GroupRules = DEFAULT_RULES,
+): MatchSummary {
+  if (result?.walkover !== undefined) return walkoverSummary(result.walkover, rules);
 
+  const toWin = setsToWin(rules);
   const won: [number, number] = [0, 0];
   const points: [number, number] = [0, 0];
   let decidedSets = 0;
@@ -190,8 +222,8 @@ export function summarizeMatch(result: MatchResult | undefined): MatchSummary {
 
   for (const set of result?.sets ?? []) {
     if (set[0] !== null || set[1] !== null) started = true;
-    if (won[0] === SETS_TO_WIN || won[1] === SETS_TO_WIN) continue;
-    const winner = setWinner(set);
+    if (won[0] === toWin || won[1] === toWin) continue;
+    const winner = setWinner(set, rules);
     if (winner === null) continue;
     won[winner]++;
     points[0] += set[0] ?? 0;
@@ -199,7 +231,7 @@ export function summarizeMatch(result: MatchResult | undefined): MatchSummary {
     decidedSets++;
   }
 
-  const finished = won[0] === SETS_TO_WIN || won[1] === SETS_TO_WIN;
+  const finished = won[0] === toWin || won[1] === toWin;
   return {
     sets: won,
     points,
@@ -216,14 +248,19 @@ export function summarizeMatch(result: MatchResult | undefined): MatchSummary {
  * ("5"), a lost set shows the player's own points as negative ("-9"). E.g. "5, -9, 6, 3".
  * A walkover shows "W.O.".
  */
-export function setNotation(result: MatchResult | undefined, side: 0 | 1): string {
+export function setNotation(
+  result: MatchResult | undefined,
+  side: 0 | 1,
+  rules: GroupRules = DEFAULT_RULES,
+): string {
   if (result?.walkover !== undefined) return 'W.O.';
+  const toWin = setsToWin(rules);
   const other = side === 0 ? 1 : 0;
   const parts: string[] = [];
   let won: [number, number] = [0, 0];
   for (const set of result?.sets ?? []) {
-    if (won[0] === SETS_TO_WIN || won[1] === SETS_TO_WIN) break;
-    const winner = setWinner(set);
+    if (won[0] === toWin || won[1] === toWin) break;
+    const winner = setWinner(set, rules);
     if (winner === null) continue;
     won = winner === 0 ? [won[0] + 1, won[1]] : [won[0], won[1] + 1];
     parts.push(winner === side ? String(set[other] ?? 0) : `-${String(set[side] ?? 0)}`);
@@ -259,7 +296,7 @@ export interface StandingRow {
   setsAgainst: number;
   pointsFor: number;
   pointsAgainst: number;
-  /** Group points: 2 per win, 1 per loss. */
+  /** Group points (by default 2 per win, 1 per loss, 0 per W.O.). */
   points: number;
   /** Current position (1 = leader). */
   position: number;
@@ -302,7 +339,11 @@ interface DecidedMatch {
 }
 
 /** Results of `players` counting only the matches between them. */
-function statsBetween(players: StandingRow[], decided: DecidedMatch[]): TieStats[] {
+function statsBetween(
+  players: StandingRow[],
+  decided: DecidedMatch[],
+  { points: score }: GroupRules,
+): TieStats[] {
   const stats = players.map((row): TieStats => ({
     row,
     matchPoints: 0,
@@ -325,9 +366,9 @@ function statsBetween(players: StandingRow[], decided: DecidedMatch[]): TieStats
     h.pointsLost += summary.points[1];
     a.pointsWon += summary.points[1];
     a.pointsLost += summary.points[0];
-    const lossPoints = summary.walkover ? POINTS_FOR_WALKOVER : POINTS_FOR_LOSS;
-    h.matchPoints += summary.winner === 0 ? POINTS_FOR_WIN : lossPoints;
-    a.matchPoints += summary.winner === 1 ? POINTS_FOR_WIN : lossPoints;
+    const lossPoints = summary.walkover ? score.walkover : score.loss;
+    h.matchPoints += summary.winner === 0 ? score.win : lossPoints;
+    a.matchPoints += summary.winner === 1 ? score.win : lossPoints;
   }
   return stats;
 }
@@ -352,8 +393,9 @@ const TIE_CRITERIA: [Exclude<TieCriterion, 'unresolved'>, (a: TieStats, b: TieSt
 function resolveTie(
   players: StandingRow[],
   decided: DecidedMatch[],
+  rules: GroupRules,
 ): { order: StandingRow[]; decidedBy: TieCriterion } {
-  const stats = statsBetween(players, decided);
+  const stats = statsBetween(players, decided, rules);
 
   for (const [criterion, compare] of TIE_CRITERIA) {
     const sorted = stats.toSorted(compare);
@@ -371,6 +413,7 @@ function resolveTie(
         : resolveTie(
             bucket.map((entry) => entry.row),
             decided,
+            rules,
           ).order,
     );
     return { order, decidedBy: criterion };
@@ -386,9 +429,14 @@ function resolveTie(
 
 /**
  * Group table: rows in the group's player order (1-4) with positions, plus the detail
- * of every tie on group points. Win = 2 pts, loss = 1 pt; ties follow resolveTie().
+ * of every tie on group points (points per `rules`); ties follow resolveTie().
  */
-export function computeGroupTable(group: Group, groupIndex: number, results: Results): GroupTable {
+export function computeGroupTable(
+  group: Group,
+  groupIndex: number,
+  results: Results,
+  rules: GroupRules = DEFAULT_RULES,
+): GroupTable {
   const rows: StandingRow[] = group.players.map((player, index) => ({
     player,
     number: index + 1,
@@ -408,7 +456,7 @@ export function computeGroupTable(group: Group, groupIndex: number, results: Res
   pairingsFor(group.players.length).forEach(([first, second], matchIndex) => {
     const home = rows[first];
     const away = rows[second];
-    const summary = summarizeMatch(results[matchKey(groupIndex, matchIndex)]);
+    const summary = summarizeMatch(results[matchKey(groupIndex, matchIndex)], rules);
     if (!summary.finished) return;
 
     home.played++;
@@ -424,9 +472,9 @@ export function computeGroupTable(group: Group, groupIndex: number, results: Res
 
     const [winner, loser] = summary.winner === 0 ? [home, away] : [away, home];
     winner.won++;
-    winner.points += POINTS_FOR_WIN;
+    winner.points += rules.points.win;
     loser.lost++;
-    loser.points += summary.walkover ? POINTS_FOR_WALKOVER : POINTS_FOR_LOSS;
+    loser.points += summary.walkover ? rules.points.walkover : rules.points.loss;
     decided.push({ home, away, summary });
   });
 
@@ -440,9 +488,9 @@ export function computeGroupTable(group: Group, groupIndex: number, results: Res
       ranked.push(...tied.toSorted((a, b) => (b.player.ranking ?? 0) - (a.player.ranking ?? 0)));
       continue;
     }
-    const { order, decidedBy } = resolveTie(tied, decided);
+    const { order, decidedBy } = resolveTie(tied, decided, rules);
     ranked.push(...order);
-    const stats = statsBetween(tied, decided);
+    const stats = statsBetween(tied, decided, rules);
     ties.push({
       points,
       decidedBy,
@@ -462,13 +510,14 @@ export function getQualifiers(
   groupIndex: number,
   results: Results,
   count: number,
+  rules: GroupRules = DEFAULT_RULES,
 ): (StandingRow | null)[] {
   const empty = Array.from({ length: count }, () => null);
-  if (countFinished(group, groupIndex, results) < pairingsFor(group.players.length).length) {
+  if (countFinished(group, groupIndex, results, rules) < pairingsFor(group.players.length).length) {
     return empty;
   }
 
-  const { rows } = computeGroupTable(group, groupIndex, results);
+  const { rows } = computeGroupTable(group, groupIndex, results, rules);
   const unresolved = rows.filter((row) => row.tieUnresolved);
   const pending =
     unresolved.some((row) => row.position <= count) &&
@@ -485,8 +534,9 @@ export function computeStandings(
   group: Group,
   groupIndex: number,
   results: Results,
+  rules: GroupRules = DEFAULT_RULES,
 ): StandingRow[] {
-  return computeGroupTable(group, groupIndex, results).rows;
+  return computeGroupTable(group, groupIndex, results, rules).rows;
 }
 
 /** True when any match of the group has something entered (sets or a walkover). */
@@ -495,6 +545,11 @@ export function groupHasResults(groupIndex: number, results: Results): boolean {
   return Object.entries(results).some(
     ([key, result]) => key.startsWith(prefix) && summarizeMatch(result).started,
   );
+}
+
+/** True when any match of the tournament has something entered (sets or a walkover). */
+export function anyResults(results: Results): boolean {
+  return Object.values(results).some((result) => summarizeMatch(result).started);
 }
 
 /** Where a player currently is: group index and position (0-based), or null. */
@@ -540,9 +595,14 @@ export function replaceGroupPlayers(
 }
 
 /** Number of finished matches in a group. */
-export function countFinished(group: Group, groupIndex: number, results: Results): number {
+export function countFinished(
+  group: Group,
+  groupIndex: number,
+  results: Results,
+  rules: GroupRules = DEFAULT_RULES,
+): number {
   return pairingsFor(group.players.length).filter(
-    (_, matchIndex) => summarizeMatch(results[matchKey(groupIndex, matchIndex)]).finished,
+    (_, matchIndex) => summarizeMatch(results[matchKey(groupIndex, matchIndex)], rules).finished,
   ).length;
 }
 
