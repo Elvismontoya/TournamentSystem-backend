@@ -3,12 +3,55 @@ import type { Request, RequestHandler } from 'express';
 import type { BracketSlot } from '../domain/knockout.ts';
 import { HttpError } from '../httpError.ts';
 import * as service from '../services/tournament.service.ts';
-import { body, int, intOrNull, intParam, optionalStr, side, str, textParam } from './parse.ts';
+import {
+  body,
+  bool,
+  int,
+  intOrNull,
+  intParam,
+  optionalStr,
+  side,
+  str,
+  strOrNull,
+  textParam,
+} from './parse.ts';
 
 const id = (request: Request) => textParam(request, 'tournamentId');
 
 export const getTournament: RequestHandler = (request, response) => {
   response.json(service.getTournament(id(request)));
+};
+
+export const updateSettings: RequestHandler = (request, response) => {
+  const data = body(request);
+  response.json(
+    service.updateSettings(id(request), {
+      name: str(data.name, 'name'),
+      sport: optionalStr(data.sport, 'sport'),
+      category: optionalStr(data.category, 'category'),
+      startDate: strOrNull(data.startDate, 'startDate'),
+      endDate: strOrNull(data.endDate, 'endDate'),
+      location: optionalStr(data.location, 'location'),
+      courts: intOrNull(data.courts, 'courts'),
+      participantType: optionalStr(data.participantType, 'participantType'),
+      format: optionalStr(data.format, 'format'),
+      capacity: int(data.capacity, 'capacity'),
+      defaultGroupSize: int(data.defaultGroupSize, 'defaultGroupSize'),
+      seeded: bool(data.seeded, 'seeded'),
+      setsPerMatch: int(data.setsPerMatch, 'setsPerMatch'),
+      gamePoints: int(data.gamePoints, 'gamePoints'),
+      winMargin: int(data.winMargin, 'winMargin'),
+      knockoutSetsPerMatch: int(data.knockoutSetsPerMatch, 'knockoutSetsPerMatch'),
+      pointsWin: int(data.pointsWin, 'pointsWin'),
+      pointsLoss: int(data.pointsLoss, 'pointsLoss'),
+      pointsWalkover: int(data.pointsWalkover, 'pointsWalkover'),
+    }),
+  );
+};
+
+export const deleteTournament: RequestHandler = (request, response) => {
+  service.deleteTournament(id(request));
+  response.sendStatus(204);
 };
 
 export const addPlayer: RequestHandler = (request, response) => {

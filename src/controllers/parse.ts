@@ -43,6 +43,15 @@ export function intOrNull(value: unknown, field: string): number | null {
   return value === undefined || value === null ? null : int(value, field);
 }
 
+export function bool(value: unknown, field: string): boolean {
+  if (typeof value !== 'boolean') throw new HttpError(400, `«${field}» debe ser true o false.`);
+  return value;
+}
+
+export function strOrNull(value: unknown, field: string): string | null {
+  return value === undefined || value === null ? null : str(value, field);
+}
+
 export function side(value: unknown, field: string): 0 | 1 {
   if (value !== 0 && value !== 1) throw new HttpError(400, `«${field}» debe ser 0 o 1.`);
   return value;

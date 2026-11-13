@@ -7,6 +7,10 @@ export const tournamentsRouter = Router();
 const base = '/:tournamentId';
 
 tournamentsRouter.get(base, controller.getTournament);
+tournamentsRouter.delete(base, controller.deleteTournament);
+
+// Settings
+tournamentsRouter.put(`${base}/configuracion`, controller.updateSettings);
 
 // Registration
 tournamentsRouter.post(`${base}/participantes`, controller.addPlayer);

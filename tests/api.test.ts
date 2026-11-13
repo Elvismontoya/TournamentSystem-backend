@@ -170,3 +170,80 @@ describe('API del torneo', () => {
     assert.ok(knockout.warnings.some((warning) => warning.includes('grupo 1')));
   });
 });
+
+describe('Configuración del torneo', () => {
+  const settings = {
+    name: 'Open Nacional 2026 (editado)',
+    sport: 'Tenis de mesa',
+    category: 'Individual mixto',
+    startDate: '2026-11-20',
+    endDate: '2026-11-21',
+    location: 'Coliseo Norte',
+    courts: 6,
+    participantType: 'Individual',
+    format: 'Grupos + eliminación',
+    capacity: 40,
+    defaultGroupSize: 4,
+    seeded: true,
+    setsPerMatch: 3,
+    gamePoints: 11,
+    winMargin: 2,
+    knockoutSetsPerMatch: 5,
+    pointsWin: 3,
+    pointsLoss: 1,
+    pointsWalkover: 0,
+  };
+
+  interface SettingsResponse extends View {
+    name: string;
+    settings: { setsPerMatch: number; setsToWin: number; capacity: number; rulesLocked: boolean };
+  }
+
+  it('rechaza valores inválidos', async () => {
+    const points = await call('PUT', '/configuracion', { ...settings, pointsWin: 1 });
+    assert.equal(points.status, 400);
+    const dates = await call('PUT', '/configuracion', { ...settings, endDate: '2026-11-01' });
+    assert.equal(dates.status, 400);
+    const capacity = await call('PUT', '/configuracion', { ...settings, capacity: 5 });
+    assert.equal(capacity.status, 409);
+    const sets = await call('PUT', '/configuracion', { ...settings, setsPerMatch: 4 });
+    assert.equal(sets.status, 400);
+  });
+
+  it('guarda la configuración y aplica las reglas a los partidos', async () => {
+    const saved = await call('PUT', '/configuracion', settings);
+    const view = saved.data as unknown as SettingsResponse;
+    assert.equal(saved.status, 200);
+    assert.equal(view.name, settings.name);
+    assert.equal(view.settings.setsPerMatch, 3);
+    assert.equal(view.settings.setsToWin, 2);
+    assert.equal(view.settings.rulesLocked, false);
+
+    // Best of 3 now: two sets finish the match, and a win is worth 3 points.
+    let after: SettingsResponse | null = null;
+    for (let set = 0; set < 2; set++) {
+      await call('PUT', `/grupos/1/partidos/0/sets/${String(set)}`, { side: 0, value: 11 });
+      after = (await call('PUT', `/grupos/1/partidos/0/sets/${String(set)}`, { side: 1, value: 5 }))
+        .data as unknown as SettingsResponse;
+    }
+    assert.ok(after?.groupStage);
+    assert.equal(after.groupStage.groups[1].matches[0].summary.finished, true);
+    assert.ok(after.groupStage.groups[1].table.rows.some((row) => row.points === 3));
+    assert.equal(after.settings.rulesLocked, true);
+  });
+
+  it('con resultados cargados no deja cambiar las reglas de juego', async () => {
+    const locked = await call('PUT', '/configuracion', { ...settings, setsPerMatch: 5 });
+    assert.equal(locked.status, 409);
+    // Everything else can still change.
+    const renamed = await call('PUT', '/configuracion', { ...settings, location: 'Otro lugar' });
+    assert.equal(renamed.status, 200);
+  });
+
+  it('elimina el torneo', async () => {
+    const removed = await fetch(base, { method: 'DELETE' });
+    assert.equal(removed.status, 204);
+    const gone = await fetch(base);
+    assert.equal(gone.status, 404);
+  });
+});
