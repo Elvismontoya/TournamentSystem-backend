@@ -239,7 +239,90 @@ describe('Configuración del torneo', () => {
     const renamed = await call('PUT', '/configuracion', { ...settings, location: 'Otro lugar' });
     assert.equal(renamed.status, 200);
   });
+});
 
+interface Entrant {
+  kind: 'player' | 'bye' | 'pending';
+  player?: { id: string; bib: number };
+}
+interface KnockoutMatch {
+  round: number;
+  index: number;
+  entrants: Entrant[];
+  playable: boolean;
+  summary: { finished: boolean };
+  advances: Entrant;
+}
+interface KnockoutResponse {
+  knockout: { rounds: KnockoutMatch[][]; champion: { id: string } | null; hasResults: boolean };
+  groupStage: { groups: { matches: unknown[] }[] };
+}
+
+describe('Llaves: resultados y avance', () => {
+  const knockoutPath = (match: { round: number; index: number }) =>
+    `/llaves/rondas/${String(match.round)}/partidos/${String(match.index)}`;
+
+  it('no deja cargar un partido sin sus dos jugadores', async () => {
+    const view = (await call('GET', '')).data as unknown as KnockoutResponse;
+    const waiting = view.knockout.rounds[0].find((match) => !match.playable);
+    assert.ok(waiting);
+    const blocked = await call('PUT', `${knockoutPath(waiting)}/wo`, { absent: 1 });
+    assert.equal(blocked.status, 409);
+  });
+
+  it('al terminar los grupos, el ganador avanza a la ronda siguiente', async () => {
+    // Close every group match: the second player never shows up.
+    const groups = ((await call('GET', '')).data as unknown as KnockoutResponse).groupStage.groups;
+    for (const [groupIndex, group] of groups.entries()) {
+      for (let matchIndex = 0; matchIndex < group.matches.length; matchIndex++) {
+        await call('PUT', `/grupos/${String(groupIndex)}/partidos/${String(matchIndex)}/wo`, {
+          absent: 1,
+        });
+      }
+    }
+    let view = (await call('GET', '')).data as unknown as KnockoutResponse;
+    const first = view.knockout.rounds[0].find((match) => match.playable);
+    assert.ok(first);
+    view = (await call('PUT', `${knockoutPath(first)}/wo`, { absent: 1 }))
+      .data as unknown as KnockoutResponse;
+    const played = view.knockout.rounds[0][first.index];
+    assert.equal(played.summary.finished, true);
+    assert.deepEqual(played.advances, played.entrants[0]);
+    const next = view.knockout.rounds[1][Math.floor(first.index / 2)];
+    assert.deepEqual(next.entrants[first.index % 2], played.entrants[0]);
+    assert.equal(view.knockout.hasResults, true);
+  });
+
+  it('con resultados en las llaves no se cambian grupos, cuadro ni sets de llaves', async () => {
+    assert.equal((await call('PUT', '/grupos/0/partidos/0/wo', { absent: 0 })).status, 409);
+    assert.equal((await call('POST', '/llaves/sorteo')).status, 409);
+    const moved = await call('PUT', '/llaves/posiciones/1', { slot: { kind: 'bye' } });
+    assert.equal(moved.status, 409);
+  });
+
+  it('se juega hasta el campeón y no se puede cambiar un partido ya superado', async () => {
+    let view = (await call('GET', '')).data as unknown as KnockoutResponse;
+    for (let round = 0; round < view.knockout.rounds.length; round++) {
+      for (const match of view.knockout.rounds[round]) {
+        if (match.playable && !match.summary.finished) {
+          view = (await call('PUT', `${knockoutPath(match)}/wo`, { absent: 1 }))
+            .data as unknown as KnockoutResponse;
+        }
+      }
+    }
+    assert.ok(view.knockout.champion);
+    const final = view.knockout.rounds.at(-1)?.[0];
+    assert.ok(final);
+    assert.equal(view.knockout.champion.id, final.entrants[0].player?.id);
+
+    const semi = view.knockout.rounds.at(-2)?.find((match) => match.playable);
+    assert.ok(semi);
+    const changed = await call('PUT', `${knockoutPath(semi)}/wo`, { absent: 0 });
+    assert.equal(changed.status, 409);
+  });
+});
+
+describe('Eliminar torneo', () => {
   it('elimina el torneo', async () => {
     const removed = await fetch(base, { method: 'DELETE' });
     assert.equal(removed.status, 204);

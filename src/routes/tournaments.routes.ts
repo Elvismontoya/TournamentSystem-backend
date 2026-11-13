@@ -29,3 +29,11 @@ tournamentsRouter.put(`${base}/grupos/:groupIndex/partidos/:matchIndex/wo`, cont
 // Knockout
 tournamentsRouter.post(`${base}/llaves/sorteo`, controller.drawKnockout);
 tournamentsRouter.put(`${base}/llaves/posiciones/:position`, controller.moveKnockoutSlot);
+tournamentsRouter.put(
+  `${base}/llaves/rondas/:round/partidos/:matchIndex/sets/:setIndex`,
+  controller.updateKnockoutSet,
+);
+tournamentsRouter.put(
+  `${base}/llaves/rondas/:round/partidos/:matchIndex/wo`,
+  controller.setKnockoutWalkover,
+);

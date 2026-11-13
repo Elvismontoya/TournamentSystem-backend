@@ -141,6 +141,32 @@ function slotOf(value: unknown): BracketSlot {
   );
 }
 
+export const updateKnockoutSet: RequestHandler = (request, response) => {
+  const data = body(request);
+  response.json(
+    service.updateKnockoutSet(
+      id(request),
+      intParam(request, 'round'),
+      intParam(request, 'matchIndex'),
+      intParam(request, 'setIndex'),
+      side(data.side, 'side'),
+      intOrNull(data.value, 'value'),
+    ),
+  );
+};
+
+export const setKnockoutWalkover: RequestHandler = (request, response) => {
+  const { absent } = body(request);
+  response.json(
+    service.setKnockoutWalkover(
+      id(request),
+      intParam(request, 'round'),
+      intParam(request, 'matchIndex'),
+      absent === null ? null : side(absent, 'absent'),
+    ),
+  );
+};
+
 export const moveKnockoutSlot: RequestHandler = (request, response) => {
   response.json(
     service.moveKnockoutSlot(
