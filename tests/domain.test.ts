@@ -17,7 +17,16 @@ import {
   type Results,
   type SetScore,
 } from '../src/domain/groupStage.ts';
-import { drawKnockout, moveSlot, seedPositions } from '../src/domain/knockout.ts';
+import {
+  drawKnockout,
+  knockoutMatchKey,
+  moveSlot,
+  nextMatchOf,
+  playKnockout,
+  seedPositions,
+  type KnockoutDraw,
+} from '../src/domain/knockout.ts';
+import { DEFAULT_RULES } from '../src/domain/groupStage.ts';
 import { nextFreeBib, parsePlayerList, sortByRanking, type Player } from '../src/domain/players.ts';
 
 const player = (bib: number, ranking: number | null = null): Player => ({
@@ -206,6 +215,77 @@ describe('cambios manuales de grupo', () => {
       ],
     );
     assert.deepEqual(touched.toSorted(), [0, 1]);
+  });
+});
+
+describe('llaves: avance de ganadores', () => {
+  // Cuadro de 8 con 3 grupos: 1.º G1 y 1.º G2 pasan con bye.
+  const draw: KnockoutDraw = {
+    size: 8,
+    warnings: [],
+    slots: [
+      { kind: 'qualifier', place: 1, groupIndex: 0 },
+      { kind: 'bye' },
+      { kind: 'qualifier', place: 2, groupIndex: 2 },
+      { kind: 'qualifier', place: 1, groupIndex: 2 },
+      { kind: 'qualifier', place: 2, groupIndex: 1 },
+      { kind: 'qualifier', place: 2, groupIndex: 0 },
+      { kind: 'bye' },
+      { kind: 'qualifier', place: 1, groupIndex: 1 },
+    ],
+  };
+  // groupIndex * 10 + place → bib, so 1.º G1 = Nr. 1, 2.º G3 = Nr. 22…
+  const known = (slot: { place: 1 | 2; groupIndex: number }) =>
+    player(slot.groupIndex * 10 + slot.place);
+
+  it('el bye pasa directo y sin resultados el resto queda pendiente', () => {
+    const { rounds, champion } = playKnockout(draw, known, {}, DEFAULT_RULES);
+    assert.deepEqual(
+      rounds.map((matches) => matches.length),
+      [4, 2, 1],
+    );
+    assert.equal(rounds[0][0].playable, false);
+    assert.deepEqual(rounds[0][0].advances, { kind: 'player', player: player(1) });
+    assert.equal(rounds[0][1].playable, true);
+    assert.equal(rounds[0][1].advances.kind, 'pending');
+    assert.equal(champion, null);
+  });
+
+  it('el ganador avanza al partido siguiente hasta el campeón', () => {
+    const results: Results = {
+      [knockoutMatchKey(0, 1)]: { sets: score(1, 3) }, // gana 1.º G3 (Nr. 21)
+      [knockoutMatchKey(0, 2)]: { sets: score(3, 0) }, // gana 2.º G2 (Nr. 12)
+      [knockoutMatchKey(1, 0)]: { sets: [], walkover: 0 }, // Nr. 1 no se presenta
+      [knockoutMatchKey(1, 1)]: { sets: score(3, 2) }, // Nr. 12 gana a Nr. 11
+      [knockoutMatchKey(2, 0)]: { sets: score(0, 3) }, // Nr. 12 gana la final
+    };
+    const { rounds, champion } = playKnockout(draw, known, results, DEFAULT_RULES);
+    assert.deepEqual(rounds[1][0].entrants, [
+      { kind: 'player', player: player(1) },
+      { kind: 'player', player: player(21) },
+    ]);
+    assert.deepEqual(rounds[1][1].entrants[1], { kind: 'player', player: player(11) });
+    assert.deepEqual(rounds[2][0].entrants, [
+      { kind: 'player', player: player(21) },
+      { kind: 'player', player: player(12) },
+    ]);
+    assert.deepEqual(champion, player(12));
+  });
+
+  it('con un grupo sin decidir, su lugar queda pendiente', () => {
+    const { rounds } = playKnockout(
+      draw,
+      (slot) => (slot.groupIndex === 2 ? null : known(slot)),
+      {},
+      DEFAULT_RULES,
+    );
+    assert.deepEqual(rounds[0][1].entrants, [{ kind: 'pending' }, { kind: 'pending' }]);
+  });
+
+  it('el siguiente partido de cada cruce', () => {
+    assert.deepEqual(nextMatchOf(8, 0, 3), { round: 1, index: 1, side: 1 });
+    assert.deepEqual(nextMatchOf(8, 1, 0), { round: 2, index: 0, side: 0 });
+    assert.equal(nextMatchOf(8, 2, 0), null);
   });
 });
 

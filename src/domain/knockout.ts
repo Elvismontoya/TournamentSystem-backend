@@ -1,6 +1,15 @@
-// Knockout draw rules: places group winners and runners-up in the main bracket (seed
-// positions, runner-up in the opposite half, byes) and checks hand-made draws.
-// Pure functions: no UI, no database, no HTTP.
+// Knockout rules: places group winners and runners-up in the main bracket (seed positions,
+// runner-up in the opposite half, byes), checks hand-made draws, and plays the bracket out
+// (each match winner advances to the next round). Pure functions: no UI, no database, no HTTP.
+
+import {
+  summarizeMatch,
+  type GroupRules,
+  type MatchResult,
+  type MatchSummary,
+  type Results,
+} from './groupStage.ts';
+import type { Player } from './players.ts';
 
 /** What occupies a bracket position: a group qualifier (1st or 2nd of a group) or a bye. */
 export type BracketSlot = { kind: 'qualifier'; place: 1 | 2; groupIndex: number } | { kind: 'bye' };
@@ -152,6 +161,101 @@ export function moveSlot(draw: KnockoutDraw, position: number, slot: BracketSlot
   const slots = [...draw.slots];
   [slots[from], slots[target]] = [slots[target], slots[from]] as [BracketSlot, BracketSlot];
   return { ...draw, slots, warnings: drawWarnings(slots) };
+}
+
+/* ---------- Playing the bracket ---------- */
+
+/** Who occupies one side of a knockout match. */
+export type Entrant =
+  | { kind: 'player'; player: Player }
+  /** Empty position: the other side passes straight through. */
+  | { kind: 'bye' }
+  /** Not known yet (group not finished, or the previous match not played). */
+  | { kind: 'pending' };
+
+export interface KnockoutMatch {
+  /** 0 = first round; the last round is the final. */
+  round: number;
+  /** Match number inside its round (0 = top). */
+  index: number;
+  entrants: [Entrant, Entrant];
+  /** What was entered, if anything. */
+  result: MatchResult | undefined;
+  summary: MatchSummary;
+  /** Both sides are players: the match can be played (results entered). */
+  playable: boolean;
+  /** Who goes on to the next round: the winner, the side facing a bye, or pending. */
+  advances: Entrant;
+}
+
+/** Results of knockout matches are keyed "round-index" (e.g. "0-3", "2-0"). */
+export function knockoutMatchKey(round: number, index: number): string {
+  return `${String(round)}-${String(index)}`;
+}
+
+/** Where the winner of (round, index) plays next: match and side, or null after the final. */
+export function nextMatchOf(
+  size: number,
+  round: number,
+  index: number,
+): { round: number; index: number; side: 0 | 1 } | null {
+  if (size / 2 ** (round + 1) <= 1) return null;
+  return { round: round + 1, index: Math.floor(index / 2), side: index % 2 === 0 ? 0 : 1 };
+}
+
+function advancing(a: Entrant, b: Entrant, summary: MatchSummary): Entrant {
+  if (a.kind === 'bye') return b;
+  if (b.kind === 'bye') return a;
+  if (a.kind === 'player' && b.kind === 'player' && summary.finished) {
+    return summary.winner === 0 ? a : b;
+  }
+  return { kind: 'pending' };
+}
+
+/**
+ * Plays the bracket out round by round: first-round sides come from the draw (`playerOf`
+ * resolves each qualifier slot, null while the group isn't decided); in later rounds each
+ * side is whoever advanced from the two matches feeding it. Returns every round's matches
+ * (the last round holds the final) and the champion once the final is decided.
+ */
+export function playKnockout(
+  draw: KnockoutDraw,
+  playerOf: (slot: Extract<BracketSlot, { kind: 'qualifier' }>) => Player | null,
+  results: Results,
+  rules: GroupRules,
+): { rounds: KnockoutMatch[][]; champion: Player | null } {
+  let current: Entrant[] = draw.slots.map((slot): Entrant => {
+    if (slot.kind === 'bye') return { kind: 'bye' };
+    const player = playerOf(slot);
+    return player ? { kind: 'player', player } : { kind: 'pending' };
+  });
+
+  const rounds: KnockoutMatch[][] = [];
+  for (let round = 0; current.length > 1; round++) {
+    const matches: KnockoutMatch[] = [];
+    for (let index = 0; index < current.length / 2; index++) {
+      const a = current[index * 2] ?? { kind: 'pending' };
+      const b = current[index * 2 + 1] ?? { kind: 'pending' };
+      const playable = a.kind === 'player' && b.kind === 'player';
+      const result = results[knockoutMatchKey(round, index)];
+      // A result only counts while both players are known.
+      const summary = summarizeMatch(playable ? result : undefined, rules);
+      matches.push({
+        round,
+        index,
+        entrants: [a, b],
+        result,
+        summary,
+        playable,
+        advances: advancing(a, b, summary),
+      });
+    }
+    rounds.push(matches);
+    current = matches.map((match) => match.advances);
+  }
+
+  const last = current.at(0);
+  return { rounds, champion: last?.kind === 'player' ? last.player : null };
 }
 
 /** Name of a round by the number of players in it. */
