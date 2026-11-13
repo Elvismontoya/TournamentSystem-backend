@@ -49,4 +49,6 @@ export interface Tournament {
   results: Results;
   /** Main bracket draw, or null before it is drawn. */
   knockout: KnockoutDraw | null;
+  /** Knockout match results keyed by "round-index" (round 0 = first round). */
+  knockoutResults: Results;
 }

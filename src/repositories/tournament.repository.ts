@@ -20,6 +20,7 @@ function seed(): void {
     groups: null,
     results: {},
     knockout: null,
+    knockoutResults: {},
   });
 }
 seed();

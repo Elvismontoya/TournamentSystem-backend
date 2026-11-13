@@ -3,6 +3,7 @@
 
 import {
   anyResults,
+  DEFAULT_RULES,
   drawGroups,
   emptySets,
   groupCountFor,
@@ -12,8 +13,15 @@ import {
   pairingsFor,
   replaceGroupPlayers,
   type MatchResult,
+  type Results,
 } from '../domain/groupStage.ts';
-import { drawKnockout, moveSlot, type BracketSlot } from '../domain/knockout.ts';
+import {
+  drawKnockout,
+  knockoutMatchKey,
+  moveSlot,
+  nextMatchOf,
+  type BracketSlot,
+} from '../domain/knockout.ts';
 import {
   nextFreeBib,
   parsePlayerList,
@@ -30,6 +38,8 @@ import {
 } from '../repositories/tournament.repository.ts';
 import {
   drawPreview,
+  knockoutRoundsOf,
+  knockoutRulesOf,
   tournamentView,
   type DrawPreview,
   type TournamentView,
@@ -48,6 +58,20 @@ function save(tournament: Tournament): TournamentView {
 
 function hasResults(tournament: Tournament): boolean {
   return anyResults(tournament.results);
+}
+
+function knockoutStarted(tournament: Tournament): boolean {
+  return anyResults(tournament.knockoutResults);
+}
+
+/** Once the bracket has results, the groups (who qualified) must stay as they are. */
+function requireGroupStageOpen(tournament: Tournament): void {
+  if (knockoutStarted(tournament)) {
+    throw new HttpError(
+      409,
+      'Las llaves ya tienen resultados: los grupos y sus resultados no se pueden cambiar.',
+    );
+  }
 }
 
 function requireGroups(tournament: Tournament) {
@@ -184,10 +208,17 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
     setsPerMatch !== rules.setsPerMatch ||
     gamePoints !== rules.gamePoints ||
     winMargin !== rules.winMargin;
-  if (rulesChanged && hasResults(tournament)) {
+  if (rulesChanged && (hasResults(tournament) || knockoutStarted(tournament))) {
     throw new HttpError(
       409,
       'Ya hay resultados cargados: los sets por partido, los puntos por set y la diferencia mínima no se pueden cambiar.',
+    );
+  }
+  const knockoutSetsChanged = knockoutSetsPerMatch !== current.knockoutSetsPerMatch;
+  if (knockoutSetsChanged && knockoutStarted(tournament)) {
+    throw new HttpError(
+      409,
+      'Las llaves ya tienen resultados: los sets por partido de las llaves no se pueden cambiar.',
     );
   }
 
@@ -215,6 +246,7 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
   };
   // No results yet: empty scoresheets must match the (possibly new) number of sets.
   if (setsPerMatch !== rules.setsPerMatch) tournament.results = {};
+  if (knockoutSetsChanged) tournament.knockoutResults = {};
   return save(tournament);
 }
 
@@ -322,6 +354,7 @@ export function previewGroupDraw(tournamentId: string, groupSize: number): DrawP
 export function drawTournamentGroups(tournamentId: string, groupSize: number): TournamentView {
   const tournament = load(tournamentId);
   validateGroupSize(groupSize);
+  requireGroupStageOpen(tournament);
   if (tournament.players.length < MIN_GROUP_SIZE) {
     throw new HttpError(409, `Se necesitan al menos ${String(MIN_GROUP_SIZE)} jugadores.`);
   }
@@ -336,6 +369,7 @@ export function drawTournamentGroups(tournamentId: string, groupSize: number): T
   );
   tournament.results = {};
   tournament.knockout = null; // a new group draw invalidates the bracket draw
+  tournament.knockoutResults = {};
   return save(tournament);
 }
 
@@ -346,6 +380,7 @@ export function setGroupPlayers(
 ): TournamentView {
   const tournament = load(tournamentId);
   const groups = requireGroups(tournament);
+  requireGroupStageOpen(tournament);
   if (!Number.isInteger(groupIndex) || groupIndex < 0 || groupIndex >= groups.length) {
     throw new HttpError(404, 'Grupo no encontrado.');
   }
@@ -377,6 +412,7 @@ export function setGroupPlayers(
 
 function requireMatch(tournament: Tournament, groupIndex: number, matchIndex: number): string {
   const groups = requireGroups(tournament);
+  requireGroupStageOpen(tournament);
   const group = Number.isInteger(groupIndex) ? groups[groupIndex] : undefined;
   if (!group) throw new HttpError(404, 'Grupo no encontrado.');
   if (
@@ -399,19 +435,40 @@ export function updateSet(
 ): TournamentView {
   const tournament = load(tournamentId);
   const key = requireMatch(tournament, groupIndex, matchIndex);
-  const rules = tournament.settings.groupRules;
-  if (!Number.isInteger(setIndex) || setIndex < 0 || setIndex >= rules.setsPerMatch) {
+  tournament.results = withSet(
+    tournament.results,
+    key,
+    tournament.settings.groupRules.setsPerMatch,
+    setIndex,
+    side,
+    value,
+  );
+  return save(tournament);
+}
+
+/** Results with one set score changed (shared by group and knockout matches). */
+function withSet(
+  results: Results,
+  key: string,
+  setsPerMatch: number,
+  setIndex: number,
+  side: 0 | 1,
+  value: number | null,
+): Results {
+  if (!Number.isInteger(setIndex) || setIndex < 0 || setIndex >= setsPerMatch) {
     throw new HttpError(404, 'Set no encontrado.');
   }
   if (value !== null && (!Number.isInteger(value) || value < 0 || value > 999)) {
     throw new HttpError(400, 'Los puntos de un set van de 0 a 999.');
   }
-  const current: MatchResult = tournament.results[key] ?? { sets: emptySets(rules) };
+  const current: MatchResult = results[key] ?? {
+    sets: emptySets({ ...DEFAULT_RULES, setsPerMatch }),
+  };
   if (current.walkover !== undefined) {
     throw new HttpError(409, 'El partido está marcado como W.O.: deshazlo para cargar sets.');
   }
-  tournament.results = {
-    ...tournament.results,
+  return {
+    ...results,
     [key]: {
       ...current,
       sets: current.sets.map((set, index) => {
@@ -420,7 +477,17 @@ export function updateSet(
       }),
     },
   };
-  return save(tournament);
+}
+
+/** Results with a walkover set (absent side) or undone (null): either way the sets start empty. */
+function withWalkover(
+  results: Results,
+  key: string,
+  setsPerMatch: number,
+  absent: 0 | 1 | null,
+): Results {
+  const sets = emptySets({ ...DEFAULT_RULES, setsPerMatch });
+  return { ...results, [key]: absent === null ? { sets } : { sets, walkover: absent } };
 }
 
 /** Marks who didn't show up (the other wins by W.O.); null undoes it. */
@@ -432,21 +499,33 @@ export function setWalkover(
 ): TournamentView {
   const tournament = load(tournamentId);
   const key = requireMatch(tournament, groupIndex, matchIndex);
-  const sets = emptySets(tournament.settings.groupRules);
   // A walkover replaces any sets entered; undoing it starts from an empty scoresheet.
-  tournament.results = {
-    ...tournament.results,
-    [key]: absent === null ? { sets } : { sets, walkover: absent },
-  };
+  tournament.results = withWalkover(
+    tournament.results,
+    key,
+    tournament.settings.groupRules.setsPerMatch,
+    absent,
+  );
   return save(tournament);
 }
 
 /* ---------- Knockout ---------- */
 
+function requireKnockoutNotStarted(tournament: Tournament): void {
+  if (knockoutStarted(tournament)) {
+    throw new HttpError(
+      409,
+      'Las llaves ya tienen resultados: no se puede volver a sortear ni mover posiciones.',
+    );
+  }
+}
+
 export function drawTournamentKnockout(tournamentId: string): TournamentView {
   const tournament = load(tournamentId);
   const groups = requireGroups(tournament);
+  requireKnockoutNotStarted(tournament);
   tournament.knockout = drawKnockout(groups.length);
+  tournament.knockoutResults = {};
   return save(tournament);
 }
 
@@ -459,6 +538,7 @@ export function moveKnockoutSlot(
   const groups = requireGroups(tournament);
   const { knockout } = tournament;
   if (!knockout) throw new HttpError(409, 'Primero sortea o arma las llaves.');
+  requireKnockoutNotStarted(tournament);
   if (!Number.isInteger(position) || position < 1 || position > knockout.size) {
     throw new HttpError(404, 'Posición fuera del cuadro.');
   }
@@ -474,5 +554,74 @@ export function moveKnockoutSlot(
     throw new HttpError(400, 'Este cuadro no tiene byes.');
   }
   tournament.knockout = moveSlot(knockout, position, slot);
+  return save(tournament);
+}
+
+/**
+ * Checks a knockout match can take results: it exists, both players are known, and its
+ * winner hasn't played the next match yet (changing it would change who is there).
+ */
+function requireKnockoutMatch(tournament: Tournament, round: number, index: number): string {
+  const played = knockoutRoundsOf(tournament);
+  if (!tournament.knockout || !played) {
+    throw new HttpError(409, 'Primero sortea o arma las llaves.');
+  }
+  const match =
+    Number.isInteger(round) && Number.isInteger(index) ? played.rounds[round]?.[index] : undefined;
+  if (!match) throw new HttpError(404, 'Partido de llaves no encontrado.');
+  if (!match.playable) {
+    const bye = match.entrants.some((entrant) => entrant.kind === 'bye');
+    throw new HttpError(
+      409,
+      bye
+        ? 'En este cruce hay un bye: el jugador pasa directo, no hay partido.'
+        : 'Este partido aún no tiene a sus dos jugadores definidos.',
+    );
+  }
+  const next = nextMatchOf(tournament.knockout.size, round, index);
+  if (next && played.rounds[next.round]?.[next.index]?.summary.started) {
+    throw new HttpError(
+      409,
+      'El ganador ya tiene resultados en el partido siguiente: bórralos primero para cambiar este.',
+    );
+  }
+  return knockoutMatchKey(round, index);
+}
+
+export function updateKnockoutSet(
+  tournamentId: string,
+  round: number,
+  index: number,
+  setIndex: number,
+  side: 0 | 1,
+  value: number | null,
+): TournamentView {
+  const tournament = load(tournamentId);
+  const key = requireKnockoutMatch(tournament, round, index);
+  tournament.knockoutResults = withSet(
+    tournament.knockoutResults,
+    key,
+    knockoutRulesOf(tournament).setsPerMatch,
+    setIndex,
+    side,
+    value,
+  );
+  return save(tournament);
+}
+
+export function setKnockoutWalkover(
+  tournamentId: string,
+  round: number,
+  index: number,
+  absent: 0 | 1 | null,
+): TournamentView {
+  const tournament = load(tournamentId);
+  const key = requireKnockoutMatch(tournament, round, index);
+  tournament.knockoutResults = withWalkover(
+    tournament.knockoutResults,
+    key,
+    knockoutRulesOf(tournament).setsPerMatch,
+    absent,
+  );
   return save(tournament);
 }

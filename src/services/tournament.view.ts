@@ -21,12 +21,21 @@ import {
   setsToWin,
   setWinner,
   summarizeMatch,
+  type GroupRules,
   type GroupTable,
   type MatchResult,
   type MatchSummary,
   type Pairing,
 } from '../domain/groupStage.ts';
-import { bracketSize, type KnockoutDraw } from '../domain/knockout.ts';
+import {
+  bracketSize,
+  nextMatchOf,
+  playKnockout,
+  roundName,
+  type Entrant,
+  type KnockoutDraw,
+  type KnockoutMatch,
+} from '../domain/knockout.ts';
 import { nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
 import type { Tournament } from '../models/tournament.ts';
 
@@ -59,6 +68,38 @@ export interface SettingsView {
   pointsWalkover: number;
   /** Results were entered: match rules (sets, points per set, margin) can't change. */
   rulesLocked: boolean;
+  /** Knockout results were entered: knockoutSetsPerMatch can't change. */
+  knockoutRulesLocked: boolean;
+}
+
+export interface KnockoutMatchView {
+  round: number;
+  index: number;
+  /** "Cuartos de final", "Final"… */
+  roundName: string;
+  entrants: [Entrant, Entrant];
+  /** What was entered (empty sets if nothing yet). */
+  result: MatchResult;
+  summary: MatchSummary;
+  setWinners: (0 | 1 | null)[];
+  notation: [string, string];
+  /** Both players known: results can be entered. */
+  playable: boolean;
+  /** Who goes on: the winner, the side facing a bye, or pending. */
+  advances: Entrant;
+  /** The winner already has results in the next match: this one can't change. */
+  locked: boolean;
+}
+
+export interface KnockoutView extends KnockoutDraw {
+  /** Every round's matches; the last round holds the final. */
+  rounds: KnockoutMatchView[][];
+  champion: Player | null;
+  /** Any knockout result entered: the draw and the group stage can't change. */
+  hasResults: boolean;
+  /** Matches with two players, and how many of them are finished. */
+  playable: number;
+  played: number;
 }
 
 export interface MatchView {
@@ -112,7 +153,7 @@ export interface TournamentView {
   /** Seeded players (top of the ranking, one per group), in seed order. */
   seedIds: string[];
   groupStage: GroupStageView | null;
-  knockout: KnockoutDraw | null;
+  knockout: KnockoutView | null;
 }
 
 export interface DrawPreview {
@@ -151,7 +192,69 @@ function settingsOf(tournament: Tournament): SettingsView {
     pointsWin: rules.points.win,
     pointsLoss: rules.points.loss,
     pointsWalkover: rules.points.walkover,
-    rulesLocked: anyResults(tournament.results),
+    rulesLocked: anyResults(tournament.results) || anyResults(tournament.knockoutResults),
+    knockoutRulesLocked: anyResults(tournament.knockoutResults),
+  };
+}
+
+/** Knockout matches use the group rules except for their own number of sets. */
+export function knockoutRulesOf(tournament: Tournament): GroupRules {
+  const { groupRules, knockoutSetsPerMatch } = tournament.settings;
+  return { ...groupRules, setsPerMatch: knockoutSetsPerMatch };
+}
+
+/** The bracket played out with the current group qualifiers; null before it is drawn. */
+export function knockoutRoundsOf(
+  tournament: Tournament,
+): { rounds: KnockoutMatch[][]; champion: Player | null } | null {
+  const { knockout, groups, results, knockoutResults, settings } = tournament;
+  if (!knockout || !groups) return null;
+  const { qualifiersPerGroup, groupRules } = settings;
+  const qualifiers = groups.map((group, groupIndex) =>
+    getQualifiers(group, groupIndex, results, qualifiersPerGroup, groupRules),
+  );
+  return playKnockout(
+    knockout,
+    (slot) => qualifiers[slot.groupIndex]?.[slot.place - 1]?.player ?? null,
+    knockoutResults,
+    knockoutRulesOf(tournament),
+  );
+}
+
+function knockoutOf(tournament: Tournament): KnockoutView | null {
+  const { knockout } = tournament;
+  const played = knockoutRoundsOf(tournament);
+  if (!knockout || !played) return null;
+  const rules = knockoutRulesOf(tournament);
+  const matchAt = (round: number, index: number) => played.rounds.at(round)?.at(index);
+
+  const rounds = played.rounds.map((matches, round) =>
+    matches.map((match): KnockoutMatchView => {
+      const next = nextMatchOf(knockout.size, round, match.index);
+      const result = match.result ?? { sets: emptySets(rules) };
+      return {
+        round,
+        index: match.index,
+        roundName: roundName(knockout.size / 2 ** round),
+        entrants: match.entrants,
+        result,
+        summary: match.summary,
+        setWinners: result.sets.map((set) => setWinner(set, rules)),
+        notation: [setNotation(result, 0, rules), setNotation(result, 1, rules)],
+        playable: match.playable,
+        advances: match.advances,
+        locked: next !== null && (matchAt(next.round, next.index)?.summary.started ?? false),
+      };
+    }),
+  );
+  const all = rounds.flat();
+  return {
+    ...knockout,
+    rounds,
+    champion: played.champion,
+    hasResults: anyResults(tournament.knockoutResults),
+    playable: all.filter((match) => match.playable).length,
+    played: all.filter((match) => match.playable && match.summary.finished).length,
   };
 }
 
@@ -224,7 +327,7 @@ export function tournamentView(tournament: Tournament): TournamentView {
     nextBib: nextFreeBib(tournament.players),
     seedIds: seedsOf(tournament).map((player) => player.id),
     groupStage: groupStageOf(tournament),
-    knockout: tournament.knockout,
+    knockout: knockoutOf(tournament),
   };
 }
 
