@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   computeGroupTable,
+  delegationClashes,
   drawGroups,
   getQualifiers,
   groupCountFor,
@@ -28,6 +29,7 @@ import {
 } from '../src/domain/knockout.ts';
 import { DEFAULT_RULES } from '../src/domain/groupStage.ts';
 import { nextFreeBib, parsePlayerList, sortByRanking, type Player } from '../src/domain/players.ts';
+import { finalRanking, type RankingEntry } from '../src/domain/ranking.ts';
 
 const player = (bib: number, ranking: number | null = null): Player => ({
   id: `p${String(bib)}`,
@@ -94,6 +96,89 @@ describe('cantidad y tamaño de grupos', () => {
     );
     const all = groups.flatMap((group) => group.players.map((p) => p.bib));
     assert.equal(new Set(all).size, 16);
+  });
+
+  describe('delegaciones repartidas', () => {
+    /** Repeatable "random" numbers, to try many draws. */
+    const randomFrom = (seed: number) => {
+      let state = seed;
+      return () => {
+        state = (state * 1103515245 + 12345) % 2147483648;
+        return state / 2147483648;
+      };
+    };
+    const withDelegation = (bib: number, delegation: string): Player => ({
+      ...player(bib, 2000 - bib),
+      delegation,
+    });
+
+    it('si se puede, ningún grupo repite delegación (con y sin cabezas de serie)', () => {
+      // 4 delegations of 4 players, 4 groups: one of each delegation per group.
+      const players = Array.from({ length: 16 }, (_, i) =>
+        withDelegation(i + 1, ['Club A', 'Club B', 'Club C', 'Club D'][i % 4] ?? ''),
+      );
+      for (let seed = 1; seed <= 50; seed++) {
+        for (const seeded of [true, false]) {
+          const groups = drawGroups(players, 4, randomFrom(seed), seeded);
+          assert.deepEqual(
+            groups.map((group) => delegationClashes(group)),
+            [[], [], [], []],
+            `sorteo ${String(seed)}`,
+          );
+          if (seeded) {
+            assert.deepEqual(
+              groups.map((group) => group.players[0]?.bib),
+              [1, 2, 3, 4],
+            );
+          }
+        }
+      }
+    });
+
+    it('si no se puede evitar, la delegación se repite lo menos posible', () => {
+      // 5 of Club A in 4 groups: only one group gets two of them.
+      const players = [
+        ...Array.from({ length: 5 }, (_, i) => withDelegation(i + 1, 'Club A')),
+        ...Array.from({ length: 7 }, (_, i) => withDelegation(i + 6, `Club ${String(i)}`)),
+      ];
+      for (let seed = 1; seed <= 50; seed++) {
+        const groups = drawGroups(players, 4, randomFrom(seed));
+        assert.equal(groups.flatMap((group) => delegationClashes(group)).length, 1);
+        assert.deepEqual(
+          groups.map((group) => group.players.length),
+          [3, 3, 3, 3],
+        );
+      }
+    });
+
+    it('sin delegación no cuenta como repetida', () => {
+      assert.deepEqual(
+        delegationClashes({
+          name: '1',
+          players: [withDelegation(1, ''), withDelegation(2, ' '), withDelegation(3, 'club a')],
+        }),
+        [],
+      );
+      // Independents (written in any way) don't share a delegation either.
+      assert.deepEqual(
+        delegationClashes({
+          name: '1',
+          players: [
+            withDelegation(1, 'Independiente'),
+            withDelegation(2, ' independiente '),
+            withDelegation(3, 'Sin delegación'),
+          ],
+        }),
+        [],
+      );
+      assert.deepEqual(
+        delegationClashes({
+          name: '1',
+          players: [withDelegation(1, 'Club A'), withDelegation(2, 'club a ')],
+        }),
+        ['Club A'],
+      );
+    });
   });
 });
 
@@ -287,6 +372,70 @@ describe('llaves: avance de ganadores', () => {
     assert.deepEqual(nextMatchOf(8, 1, 0), { round: 2, index: 0, side: 0 });
     assert.equal(nextMatchOf(8, 2, 0), null);
   });
+
+  describe('clasificación final', () => {
+    // Same bracket as above: Nr. 12 is champion, Nr. 21 runner-up, Nr. 1 and Nr. 11 lose
+    // the semifinals, Nr. 22 and Nr. 2 the quarterfinals (the other two had byes).
+    const results: Results = {
+      [knockoutMatchKey(0, 1)]: { sets: score(1, 3) },
+      [knockoutMatchKey(0, 2)]: { sets: score(3, 0) },
+      [knockoutMatchKey(1, 0)]: { sets: [], walkover: 0 },
+      [knockoutMatchKey(1, 1)]: { sets: score(3, 2) },
+      [knockoutMatchKey(2, 0)]: { sets: score(0, 3) },
+    };
+    // Players eliminated in the groups: three 3rds and one 4th.
+    const groupPlacings = [
+      { player: player(3), position: 3 },
+      { player: player(13), position: 3 },
+      { player: player(23), position: 3 },
+      { player: player(4), position: 4 },
+      { player: player(1), position: 1 },
+    ];
+    const positions = (ranking: RankingEntry[] | null) =>
+      ranking?.map((entry) => [entry.position, entry.player.bib]);
+
+    it('sin partido por el 3.er puesto, los dos semifinalistas comparten el 3.º', () => {
+      const played = playKnockout(draw, known, results, DEFAULT_RULES);
+      assert.equal(played.thirdPlace, null);
+      assert.deepEqual(positions(finalRanking(played, groupPlacings)), [
+        [1, 12],
+        [2, 21],
+        [3, 1],
+        [3, 11],
+        [5, 22],
+        [5, 2],
+        [7, 3],
+        [7, 13],
+        [7, 23],
+        [10, 4],
+      ]);
+    });
+
+    it('con partido por el 3.er puesto, lo juegan los perdedores de semifinal', () => {
+      const pending = playKnockout(draw, known, results, DEFAULT_RULES, true);
+      assert.deepEqual(pending.thirdPlace?.entrants, [
+        { kind: 'player', player: player(1) },
+        { kind: 'player', player: player(11) },
+      ]);
+      // Champion known, but the tournament isn't over until 3rd place is decided.
+      assert.equal(finalRanking(pending, groupPlacings), null);
+
+      const played = playKnockout(
+        draw,
+        known,
+        { ...results, [knockoutMatchKey(2, 1)]: { sets: score(0, 3) } }, // Nr. 11 wins
+        DEFAULT_RULES,
+        true,
+      );
+      assert.deepEqual(positions(finalRanking(played, groupPlacings))?.slice(0, 5), [
+        [1, 12],
+        [2, 21],
+        [3, 11],
+        [4, 1],
+        [5, 22],
+      ]);
+    });
+  });
 });
 
 describe('llaves', () => {
@@ -310,6 +459,27 @@ describe('llaves', () => {
         assert.deepEqual(draw.warnings, [], `${String(groupCount)} grupos`);
         assert.equal(draw.slots.filter((slot) => slot.kind === 'qualifier').length, groupCount * 2);
       }
+    }
+  });
+
+  it('en la primera ronda separa a los de la misma delegación si se puede', () => {
+    // Every qualifier from a different club, except the 2.º of group 1 and the 1.º of
+    // group 2 (both Club A): they must never meet in the first round.
+    const clubA = (slot: { place: 1 | 2; groupIndex: number }) =>
+      (slot.place === 2 && slot.groupIndex === 0) || (slot.place === 1 && slot.groupIndex === 1);
+    const playerOf = (slot: { place: 1 | 2; groupIndex: number }): Player => ({
+      ...player(slot.groupIndex * 10 + slot.place),
+      delegation: clubA(slot) ? 'Club A' : `Club ${String(slot.groupIndex)}-${String(slot.place)}`,
+    });
+    for (let run = 0; run < 300; run++) {
+      const draw = drawKnockout(4, Math.random, playerOf);
+      // Also: every runner-up still sits in the half opposite its group winner.
+      assert.deepEqual(draw.warnings, []);
+      const second = draw.slots.findIndex(
+        (slot) => slot.kind === 'qualifier' && slot.place === 2 && slot.groupIndex === 0,
+      );
+      const opponent = draw.slots[second % 2 === 0 ? second + 1 : second - 1];
+      assert.notDeepEqual(opponent, { kind: 'qualifier', place: 1, groupIndex: 1 });
     }
   });
 

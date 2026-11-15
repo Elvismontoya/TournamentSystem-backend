@@ -35,8 +35,11 @@ import {
   type Entrant,
   type KnockoutDraw,
   type KnockoutMatch,
+  type PlayedKnockout,
+  type SlotPlayer,
 } from '../domain/knockout.ts';
 import { nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
+import { finalRanking, knockoutFinished, type RankingEntry } from '../domain/ranking.ts';
 import type { Tournament } from '../models/tournament.ts';
 
 /** Tournament settings plus limits, flattened for the frontend (Configuración and the rest). */
@@ -62,6 +65,8 @@ export interface SettingsView {
   gamePoints: number;
   winMargin: number;
   knockoutSetsPerMatch: number;
+  /** The semifinal losers play for 3rd place; when false, both share 3rd place. */
+  thirdPlaceMatch: boolean;
   pointsWin: number;
   pointsLoss: number;
   pointsWalkover: number;
@@ -69,6 +74,8 @@ export interface SettingsView {
   rulesLocked: boolean;
   /** Knockout results were entered: knockoutSetsPerMatch can't change. */
   knockoutRulesLocked: boolean;
+  /** The match for 3rd place has results: it can't be turned off. */
+  thirdPlaceLocked: boolean;
 }
 
 export interface KnockoutMatchView {
@@ -93,7 +100,11 @@ export interface KnockoutMatchView {
 export interface KnockoutView extends KnockoutDraw {
   /** Every round's matches; the last round holds the final. */
   rounds: KnockoutMatchView[][];
+  /** Match for 3rd place (round = final's round, index 1), or null if it isn't played. */
+  thirdPlace: KnockoutMatchView | null;
   champion: Player | null;
+  /** Final decided and, if it is played, the match for 3rd place too. */
+  finished: boolean;
   /** Any knockout result entered: the draw and the group stage can't change. */
   hasResults: boolean;
   /** Matches with two players, and how many of them are finished. */
@@ -153,6 +164,8 @@ export interface TournamentView {
   seedIds: string[];
   groupStage: GroupStageView | null;
   knockout: KnockoutView | null;
+  /** Final ranking (every player who played), once the knockout is over; null before. */
+  ranking: RankingEntry[] | null;
 }
 
 export interface DrawPreview {
@@ -187,11 +200,13 @@ function settingsOf(tournament: Tournament): SettingsView {
     gamePoints: rules.gamePoints,
     winMargin: rules.winMargin,
     knockoutSetsPerMatch: settings.knockoutSetsPerMatch,
+    thirdPlaceMatch: settings.thirdPlaceMatch,
     pointsWin: rules.points.win,
     pointsLoss: rules.points.loss,
     pointsWalkover: rules.points.walkover,
     rulesLocked: anyResults(tournament.results) || anyResults(tournament.knockoutResults),
     knockoutRulesLocked: anyResults(tournament.knockoutResults),
+    thirdPlaceLocked: knockoutRoundsOf(tournament)?.thirdPlace?.summary.started ?? false,
   };
 }
 
@@ -201,22 +216,50 @@ export function knockoutRulesOf(tournament: Tournament): GroupRules {
   return { ...groupRules, setsPerMatch: knockoutSetsPerMatch };
 }
 
-/** The bracket played out with the current group qualifiers; null before it is drawn. */
-export function knockoutRoundsOf(
-  tournament: Tournament,
-): { rounds: KnockoutMatch[][]; champion: Player | null } | null {
-  const { knockout, groups, results, knockoutResults, settings } = tournament;
-  if (!knockout || !groups) return null;
+/** Who holds each qualifier slot (1.º/2.º of a group) right now; null while undecided. */
+export function slotPlayerOf(tournament: Tournament): SlotPlayer {
+  const { groups, results, settings } = tournament;
   const { qualifiersPerGroup, groupRules } = settings;
-  const qualifiers = groups.map((group, groupIndex) =>
+  const qualifiers = (groups ?? []).map((group, groupIndex) =>
     getQualifiers(group, groupIndex, results, qualifiersPerGroup, groupRules),
   );
+  return (slot) => qualifiers[slot.groupIndex]?.[slot.place - 1]?.player ?? null;
+}
+
+/** The bracket played out with the current group qualifiers; null before it is drawn. */
+export function knockoutRoundsOf(tournament: Tournament): PlayedKnockout | null {
+  const { knockout, groups, knockoutResults, settings } = tournament;
+  if (!knockout || !groups) return null;
   return playKnockout(
     knockout,
-    (slot) => qualifiers[slot.groupIndex]?.[slot.place - 1]?.player ?? null,
+    slotPlayerOf(tournament),
     knockoutResults,
     knockoutRulesOf(tournament),
+    settings.thirdPlaceMatch,
   );
+}
+
+/** A knockout match by position; the match for 3rd place is match 1 of the final's round. */
+export function knockoutMatchAt(
+  played: PlayedKnockout,
+  round: number,
+  index: number,
+): KnockoutMatch | undefined {
+  if (round === played.rounds.length - 1 && index === 1) return played.thirdPlace ?? undefined;
+  return played.rounds.at(round)?.at(index);
+}
+
+/**
+ * A match can't change once a match it feeds has results: the next match (its winner) and,
+ * for a semifinal, the match for 3rd place (its loser).
+ */
+export function knockoutMatchLocked(played: PlayedKnockout, round: number, index: number): boolean {
+  const next = nextMatchOf(2 ** played.rounds.length, round, index);
+  const fed = [
+    next ? knockoutMatchAt(played, next.round, next.index) : undefined,
+    round === played.rounds.length - 2 ? played.thirdPlace : null,
+  ];
+  return fed.some((match) => match?.summary.started ?? false);
 }
 
 function knockoutOf(tournament: Tournament): KnockoutView | null {
@@ -224,36 +267,53 @@ function knockoutOf(tournament: Tournament): KnockoutView | null {
   const played = knockoutRoundsOf(tournament);
   if (!knockout || !played) return null;
   const rules = knockoutRulesOf(tournament);
-  const matchAt = (round: number, index: number) => played.rounds.at(round)?.at(index);
+
+  const matchView = (match: KnockoutMatch, name: string): KnockoutMatchView => {
+    const result = match.result ?? { sets: emptySets(rules) };
+    return {
+      round: match.round,
+      index: match.index,
+      roundName: name,
+      entrants: match.entrants,
+      result,
+      summary: match.summary,
+      setWinners: result.sets.map((set) => setWinner(set, rules)),
+      notation: [setNotation(result, 0, rules), setNotation(result, 1, rules)],
+      playable: match.playable,
+      advances: match.advances,
+      locked: knockoutMatchLocked(played, match.round, match.index),
+    };
+  };
 
   const rounds = played.rounds.map((matches, round) =>
-    matches.map((match): KnockoutMatchView => {
-      const next = nextMatchOf(knockout.size, round, match.index);
-      const result = match.result ?? { sets: emptySets(rules) };
-      return {
-        round,
-        index: match.index,
-        roundName: roundName(knockout.size / 2 ** round),
-        entrants: match.entrants,
-        result,
-        summary: match.summary,
-        setWinners: result.sets.map((set) => setWinner(set, rules)),
-        notation: [setNotation(result, 0, rules), setNotation(result, 1, rules)],
-        playable: match.playable,
-        advances: match.advances,
-        locked: next !== null && (matchAt(next.round, next.index)?.summary.started ?? false),
-      };
-    }),
+    matches.map((match) => matchView(match, roundName(knockout.size / 2 ** round))),
   );
-  const all = rounds.flat();
+  const thirdPlace = played.thirdPlace ? matchView(played.thirdPlace, 'Tercer puesto') : null;
+  const all = [...rounds.flat(), ...(thirdPlace ? [thirdPlace] : [])];
   return {
     ...knockout,
     rounds,
+    thirdPlace,
     champion: played.champion,
+    finished: knockoutFinished(played),
     hasResults: anyResults(tournament.knockoutResults),
     playable: all.filter((match) => match.playable).length,
     played: all.filter((match) => match.playable && match.summary.finished).length,
   };
+}
+
+/** Final ranking once the knockout is over (null before). */
+function rankingOf(tournament: Tournament): RankingEntry[] | null {
+  const { groups, results, settings } = tournament;
+  const played = knockoutRoundsOf(tournament);
+  if (!groups || !played) return null;
+  const placings = groups.flatMap((group, groupIndex) =>
+    computeGroupTable(group, groupIndex, results, settings.groupRules).rows.map((row) => ({
+      player: row.player,
+      position: row.position,
+    })),
+  );
+  return finalRanking(played, placings);
 }
 
 function groupStageOf(tournament: Tournament): GroupStageView | null {
@@ -326,6 +386,7 @@ export function tournamentView(tournament: Tournament): TournamentView {
     seedIds: seedsOf(tournament).map((player) => player.id),
     groupStage: groupStageOf(tournament),
     knockout: knockoutOf(tournament),
+    ranking: rankingOf(tournament),
   };
 }
 
