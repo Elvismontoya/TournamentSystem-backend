@@ -16,6 +16,40 @@ export function sortByRanking(players: Player[]): Player[] {
   return players.toSorted((a, b) => (b.ranking ?? -1) - (a.ranking ?? -1));
 }
 
+/** Written as a delegation, but meaning "none": these players never clash with anyone. */
+const NO_DELEGATION = new Set([
+  '',
+  '-',
+  'independiente',
+  'independientes',
+  'sin delegacion',
+  'sin club',
+  'ninguna',
+  'ninguno',
+  'libre',
+  'n/a',
+]);
+
+/**
+ * Delegation used to compare players: case, accents and extra spaces don't matter, and ""
+ * means none (no delegation, "Independiente", "Sin delegación"…), which never clashes.
+ */
+export function delegationKey(player: Player): string {
+  const key = player.delegation
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLocaleLowerCase('es')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return NO_DELEGATION.has(key) ? '' : key;
+}
+
+/** Two players of the same (real) delegation. */
+export function sameDelegation(a: Player, b: Player): boolean {
+  const key = delegationKey(a);
+  return key !== '' && key === delegationKey(b);
+}
+
 /** Smallest Nr. not used yet (1, 2, 3…), skipping the ones in `taken`. */
 export function nextFreeBib(players: Player[], taken: number[] = []): number {
   const used = new Set([...players.map((player) => player.bib), ...taken]);

@@ -2,7 +2,7 @@
 // ITTF tie-breaks, manual group changes. Pure functions: no UI, no database, no HTTP.
 // Used today by the frontend (in memory); meant to become part of the backend services.
 
-import { sortByRanking, type Player } from './players.ts';
+import { delegationKey, sortByRanking, type Player } from './players.ts';
 
 export interface Group {
   name: string;
@@ -135,9 +135,28 @@ function shuffle<T>(items: T[], random: () => number): T[] {
 }
 
 /**
+ * Delegations with more than one player in the group (as written on the first of them).
+ * Allowed, but best avoided: the draw spreads delegations as much as it can.
+ */
+export function delegationClashes(group: Group): string[] {
+  const seen = new Map<string, { name: string; count: number }>();
+  for (const player of group.players) {
+    const key = delegationKey(player);
+    if (key === '') continue;
+    const entry = seen.get(key);
+    if (entry) entry.count++;
+    else seen.set(key, { name: player.delegation.trim(), count: 1 });
+  }
+  return [...seen.values()].filter((entry) => entry.count > 1).map((entry) => entry.name);
+}
+
+/**
  * Seeded random draw: the top `groupCount` players by ranking head one group each
- * (seed 1 → group 1, seed 2 → group 2…); everyone else is shuffled and dealt in turn.
- * With `seeded` false nobody is placed by ranking: everyone is shuffled and dealt.
+ * (seed 1 → group 1, seed 2 → group 2…); with `seeded` false nobody is placed by ranking.
+ * Everyone else is placed at random but spreading delegations: players of the biggest
+ * delegations go first, each to a group with the fewest players of their delegation (so two
+ * players of the same delegation only share a group when it can't be avoided).
+ * Group sizes are the same as dealing in turn: the first groups get the extra players.
  */
 export function drawGroups(
   players: Player[],
@@ -151,10 +170,84 @@ export function drawGroups(
     name: String(index + 1),
     players: seeds[index] ? [seeds[index]] : [],
   }));
-  shuffle(byRanking.slice(seeds.length), random).forEach((player, index) => {
-    groups[index % groupCount]?.players.push(player);
-  });
+  const capacity = groups.map(
+    (_, index) =>
+      Math.floor(players.length / groupCount) + (index < players.length % groupCount ? 1 : 0),
+  );
+
+  const rest = shuffle(byRanking.slice(seeds.length), random);
+  const delegationSize = new Map<string, number>();
+  for (const player of players) {
+    const key = delegationKey(player);
+    delegationSize.set(key, (delegationSize.get(key) ?? 0) + 1);
+  }
+  const sizeOf = (player: Player) => {
+    const key = delegationKey(player);
+    return key === '' ? 0 : (delegationSize.get(key) ?? 0);
+  };
+  // Biggest delegations first (they are the hardest to spread); random order otherwise.
+  rest.sort((a, b) => sizeOf(b) - sizeOf(a));
+
+  for (const player of rest) {
+    const key = delegationKey(player);
+    const sameDelegation = (group: Group) =>
+      key === '' ? 0 : group.players.filter((member) => delegationKey(member) === key).length;
+    const open = groups.flatMap((group, index) =>
+      group.players.length < (capacity[index] ?? 0) ? [{ group, index }] : [],
+    );
+    const fewest = Math.min(...open.map(({ group }) => sameDelegation(group)));
+    const candidates = open.filter(({ group }) => sameDelegation(group) === fewest);
+    // Among equally good groups: the emptiest, then at random.
+    const smallest = Math.min(...candidates.map(({ group }) => group.players.length));
+    const best = candidates.filter(({ group }) => group.players.length === smallest);
+    const chosen = best.at(Math.floor(random() * best.length)) ?? open.at(0);
+    chosen?.group.players.push(player);
+  }
+  spreadDelegations(groups, new Set(seeds));
   return groups;
+}
+
+/** Pairs of players of the same delegation inside a group (what the draw tries to avoid). */
+function clashPairs(group: Group): number {
+  const counts = new Map<string, number>();
+  for (const player of group.players) {
+    const key = delegationKey(player);
+    if (key !== '') counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return [...counts.values()].reduce((sum, count) => sum + (count * (count - 1)) / 2, 0);
+}
+
+/**
+ * Fixes what placing one by one couldn't: swaps a player sharing their group's delegation
+ * with a player of another group whenever that leaves fewer same-delegation pairs.
+ * Seeds never move. Each swap strictly lowers the total, so it always ends.
+ */
+function spreadDelegations(groups: Group[], fixed: Set<Player>): void {
+  let improved = true;
+  while (improved) {
+    improved = false;
+    search: for (const first of groups) {
+      if (clashPairs(first) === 0) continue;
+      for (const [i, a] of first.players.entries()) {
+        if (fixed.has(a) || delegationKey(a) === '') continue;
+        for (const second of groups) {
+          if (second === first) continue;
+          for (const [j, b] of second.players.entries()) {
+            if (fixed.has(b)) continue;
+            const before = clashPairs(first) + clashPairs(second);
+            first.players[i] = b;
+            second.players[j] = a;
+            if (clashPairs(first) + clashPairs(second) < before) {
+              improved = true;
+              break search;
+            }
+            first.players[i] = a;
+            second.players[j] = b;
+          }
+        }
+      }
+    }
+  }
 }
 
 /** Index of the set winner (0 or 1), or null if the score isn't a valid finished set. */
