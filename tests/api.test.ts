@@ -300,8 +300,17 @@ interface KnockoutMatch {
   advances: Entrant;
 }
 interface KnockoutResponse {
-  knockout: { rounds: KnockoutMatch[][]; champion: { id: string } | null; hasResults: boolean };
+  name: string;
+  settings: Record<string, unknown>;
+  knockout: {
+    rounds: KnockoutMatch[][];
+    thirdPlace: KnockoutMatch | null;
+    champion: { id: string } | null;
+    finished: boolean;
+    hasResults: boolean;
+  };
   groupStage: { groups: { matches: unknown[] }[] };
+  ranking: { position: number; player: { id: string }; reached: string }[] | null;
 }
 
 describe('Llaves: resultados y avance', () => {
@@ -346,6 +355,21 @@ describe('Llaves: resultados y avance', () => {
     assert.equal(moved.status, 409);
   });
 
+  /** Saves Configuración with the current values, except for `thirdPlaceMatch`. */
+  const setThirdPlace = async (thirdPlaceMatch: boolean) => {
+    const { name, settings } = (await call('GET', '')).data as unknown as KnockoutResponse;
+    return call('PUT', '/configuracion', { ...settings, name, thirdPlaceMatch });
+  };
+
+  it('activa el partido por el 3.er puesto', async () => {
+    const saved = await setThirdPlace(true);
+    assert.equal(saved.status, 200);
+    const view = saved.data as unknown as KnockoutResponse;
+    assert.equal(view.settings.thirdPlaceMatch, true);
+    assert.ok(view.knockout.thirdPlace);
+    assert.equal(view.knockout.thirdPlace.playable, false);
+  });
+
   it('se juega hasta el campeón y no se puede cambiar un partido ya superado', async () => {
     let view = (await call('GET', '')).data as unknown as KnockoutResponse;
     for (let round = 0; round < view.knockout.rounds.length; round++) {
@@ -365,6 +389,58 @@ describe('Llaves: resultados y avance', () => {
     assert.ok(semi);
     const changed = await call('PUT', `${knockoutPath(semi)}/wo`, { absent: 0 });
     assert.equal(changed.status, 409);
+  });
+
+  it('con campeón pero sin 3.er puesto, el torneo aún no termina', async () => {
+    const view = (await call('GET', '')).data as unknown as KnockoutResponse;
+    assert.equal(view.knockout.finished, false);
+    assert.equal(view.ranking, null);
+    assert.equal(view.knockout.thirdPlace?.playable, true);
+  });
+
+  it('al jugar el 3.er puesto sale la clasificación final', async () => {
+    const before = (await call('GET', '')).data as unknown as KnockoutResponse;
+    const third = before.knockout.thirdPlace;
+    assert.ok(third);
+    const { data } = await call('PUT', `${knockoutPath(third)}/wo`, { absent: 1 });
+    const view = data as unknown as KnockoutResponse;
+    assert.equal(view.knockout.finished, true);
+    assert.ok(view.ranking);
+    // Podium, then shared places (how many depends on the draw and its byes), in order.
+    const positions = view.ranking.map((entry) => entry.position);
+    assert.deepEqual(positions.slice(0, 5), [1, 2, 3, 4, 5]);
+    assert.ok(
+      positions.every((position, index) => index === 0 || position >= positions[index - 1]),
+    );
+    const inGroups = before.groupStage.groups.reduce(
+      (sum, group) => sum + (group as unknown as { players: unknown[] }).players.length,
+      0,
+    );
+    assert.equal(view.ranking.length, inGroups);
+    assert.equal(view.ranking[0].player.id, view.knockout.champion?.id);
+    assert.equal(view.ranking[2].player.id, third.entrants[0].player?.id);
+    assert.equal(view.ranking[2].reached, 'Tercer puesto');
+
+    // With its result entered, the semifinals are locked and it can't be turned off.
+    const semi = view.knockout.rounds.at(-2)?.[0];
+    assert.ok(semi);
+    assert.equal((await call('PUT', `${knockoutPath(semi)}/wo`, { absent: 0 })).status, 409);
+    assert.equal((await setThirdPlace(false)).status, 409);
+  });
+
+  it('borrado el 3.er puesto, se puede quitar y los semifinalistas comparten el 3.º', async () => {
+    const before = (await call('GET', '')).data as unknown as KnockoutResponse;
+    const third = before.knockout.thirdPlace;
+    assert.ok(third);
+    await call('PUT', `${knockoutPath(third)}/wo`, { absent: null });
+    const saved = await setThirdPlace(false);
+    assert.equal(saved.status, 200);
+    const view = saved.data as unknown as KnockoutResponse;
+    assert.equal(view.knockout.thirdPlace, null);
+    assert.deepEqual(
+      view.ranking?.slice(0, 5).map((entry) => entry.position),
+      [1, 2, 3, 3, 5],
+    );
   });
 });
 

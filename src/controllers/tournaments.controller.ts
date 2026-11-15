@@ -41,6 +41,11 @@ export const updateSettings: RequestHandler = (request, response) => {
       gamePoints: int(data.gamePoints, 'gamePoints'),
       winMargin: int(data.winMargin, 'winMargin'),
       knockoutSetsPerMatch: int(data.knockoutSetsPerMatch, 'knockoutSetsPerMatch'),
+      // Optional: left out, it keeps its current value.
+      thirdPlaceMatch:
+        data.thirdPlaceMatch === undefined
+          ? undefined
+          : bool(data.thirdPlaceMatch, 'thirdPlaceMatch'),
       pointsWin: int(data.pointsWin, 'pointsWin'),
       pointsLoss: int(data.pointsLoss, 'pointsLoss'),
       pointsWalkover: int(data.pointsWalkover, 'pointsWalkover'),

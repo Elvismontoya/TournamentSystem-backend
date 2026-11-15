@@ -33,6 +33,8 @@ export interface TournamentSettings {
   groupRules: GroupRules;
   /** Best of N sets in the main bracket. */
   knockoutSetsPerMatch: number;
+  /** The semifinal losers play for 3rd place; when false, both share 3rd place. */
+  thirdPlaceMatch: boolean;
 }
 
 export interface Tournament {
@@ -47,6 +49,9 @@ export interface Tournament {
   results: Results;
   /** Main bracket draw, or null before it is drawn. */
   knockout: KnockoutDraw | null;
-  /** Knockout match results keyed by "round-index" (round 0 = first round). */
+  /**
+   * Knockout match results keyed by "round-index" (round 0 = first round). The match for
+   * 3rd place is match 1 of the final's round.
+   */
   knockoutResults: Results;
 }

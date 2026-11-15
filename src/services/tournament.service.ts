@@ -16,13 +16,7 @@ import {
   type MatchResult,
   type Results,
 } from '../domain/groupStage.ts';
-import {
-  drawKnockout,
-  knockoutMatchKey,
-  moveSlot,
-  nextMatchOf,
-  type BracketSlot,
-} from '../domain/knockout.ts';
+import { drawKnockout, knockoutMatchKey, moveSlot, type BracketSlot } from '../domain/knockout.ts';
 import {
   nextFreeBib,
   parsePlayerList,
@@ -39,8 +33,11 @@ import {
 } from '../repositories/tournament.repository.ts';
 import {
   drawPreview,
+  knockoutMatchAt,
+  knockoutMatchLocked,
   knockoutRoundsOf,
   knockoutRulesOf,
+  slotPlayerOf,
   tournamentView,
   type DrawPreview,
   type TournamentView,
@@ -63,6 +60,10 @@ function hasResults(tournament: Tournament): boolean {
 
 function knockoutStarted(tournament: Tournament): boolean {
   return anyResults(tournament.knockoutResults);
+}
+
+function thirdPlaceStarted(tournament: Tournament): boolean {
+  return knockoutRoundsOf(tournament)?.thirdPlace?.summary.started ?? false;
 }
 
 /** Once the bracket has results, the groups (who qualified) must stay as they are. */
@@ -103,6 +104,8 @@ export interface SettingsUpdate {
   gamePoints: number;
   winMargin: number;
   knockoutSetsPerMatch: number;
+  /** Left out (undefined): keeps the current value. */
+  thirdPlaceMatch?: boolean;
   pointsWin: number;
   pointsLoss: number;
   pointsWalkover: number;
@@ -218,6 +221,14 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
     );
   }
 
+  const thirdPlaceMatch = update.thirdPlaceMatch ?? current.thirdPlaceMatch;
+  if (thirdPlaceMatch !== current.thirdPlaceMatch && thirdPlaceStarted(tournament)) {
+    throw new HttpError(
+      409,
+      'El partido por el 3.er puesto ya tiene resultados: bórralos para quitarlo.',
+    );
+  }
+
   tournament.name = name;
   tournament.settings = {
     ...current,
@@ -238,10 +249,19 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
       points: { win: pointsWin, loss: pointsLoss, walkover: pointsWalkover },
     },
     knockoutSetsPerMatch,
+    thirdPlaceMatch,
   };
   // No results yet: empty scoresheets must match the (possibly new) number of sets.
   if (setsPerMatch !== rules.setsPerMatch) tournament.results = {};
   if (knockoutSetsChanged) tournament.knockoutResults = {};
+  // Turned off with nothing entered: drop its (empty) scoresheet, if any.
+  const rounds = tournament.knockout ? Math.log2(tournament.knockout.size) : 0;
+  if (!thirdPlaceMatch && rounds >= 2) {
+    const key = knockoutMatchKey(rounds - 1, 1);
+    tournament.knockoutResults = Object.fromEntries(
+      Object.entries(tournament.knockoutResults).filter(([candidate]) => candidate !== key),
+    );
+  }
   return save(tournament);
 }
 
@@ -569,7 +589,8 @@ export function drawTournamentKnockout(tournamentId: string): TournamentView {
   const tournament = load(tournamentId);
   const groups = requireGroups(tournament);
   requireKnockoutNotStarted(tournament);
-  tournament.knockout = drawKnockout(groups.length);
+  // Qualifiers already known are kept apart from their delegation in the first round.
+  tournament.knockout = drawKnockout(groups.length, Math.random, slotPlayerOf(tournament));
   tournament.knockoutResults = {};
   return save(tournament);
 }
@@ -612,7 +633,9 @@ function requireKnockoutMatch(tournament: Tournament, round: number, index: numb
     throw new HttpError(409, 'Primero sortea o arma las llaves.');
   }
   const match =
-    Number.isInteger(round) && Number.isInteger(index) ? played.rounds[round]?.[index] : undefined;
+    Number.isInteger(round) && Number.isInteger(index)
+      ? knockoutMatchAt(played, round, index)
+      : undefined;
   if (!match) throw new HttpError(404, 'Partido de llaves no encontrado.');
   if (!match.playable) {
     const bye = match.entrants.some((entrant) => entrant.kind === 'bye');
@@ -623,11 +646,10 @@ function requireKnockoutMatch(tournament: Tournament, round: number, index: numb
         : 'Este partido aún no tiene a sus dos jugadores definidos.',
     );
   }
-  const next = nextMatchOf(tournament.knockout.size, round, index);
-  if (next && played.rounds[next.round]?.[next.index]?.summary.started) {
+  if (knockoutMatchLocked(played, round, index)) {
     throw new HttpError(
       409,
-      'El ganador ya tiene resultados en el partido siguiente: bórralos primero para cambiar este.',
+      'Ya hay resultados en el partido siguiente (o en el del 3.er puesto): bórralos primero para cambiar este.',
     );
   }
   return knockoutMatchKey(round, index);

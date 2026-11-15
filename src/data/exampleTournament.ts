@@ -38,7 +38,8 @@ export const EXAMPLE_SETTINGS: TournamentSettings = {
   qualifiersPerGroup: 2,
   seeded: true,
   groupRules: DEFAULT_RULES,
-  knockoutSetsPerMatch: 7,
+  knockoutSetsPerMatch: 5,
+  thirdPlaceMatch: false,
 };
 
 export const EXAMPLE_TOURNAMENT = {
