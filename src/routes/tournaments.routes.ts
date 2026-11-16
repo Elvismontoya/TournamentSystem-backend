@@ -17,6 +17,7 @@ tournamentsRouter.put(`${base}/configuracion`, controller.updateSettings);
 // Registration
 tournamentsRouter.post(`${base}/participantes`, controller.addPlayer);
 tournamentsRouter.post(`${base}/participantes/importar`, controller.importPlayers);
+tournamentsRouter.delete(`${base}/participantes`, controller.removeAllPlayers);
 tournamentsRouter.put(`${base}/participantes/:playerId`, controller.updatePlayer);
 tournamentsRouter.delete(`${base}/participantes/:playerId`, controller.removePlayer);
 

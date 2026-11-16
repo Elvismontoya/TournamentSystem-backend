@@ -101,6 +101,10 @@ export const updatePlayer: RequestHandler = (request, response) => {
   );
 };
 
+export const removeAllPlayers: RequestHandler = (request, response) => {
+  response.json(service.removeAllPlayers(id(request)));
+};
+
 export const removePlayer: RequestHandler = (request, response) => {
   response.json(service.removePlayer(id(request), playerId(request)));
 };

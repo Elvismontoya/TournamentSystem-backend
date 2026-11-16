@@ -531,6 +531,22 @@ describe('Crear torneo', () => {
       ?.matches.at(0);
     assert.equal(match?.summary.finished, true);
   });
+
+  it('elimina a todos los jugadores (y sus grupos) solo si no hay resultados', async () => {
+    // This one has a result entered: not allowed.
+    const blocked = await request('DELETE', '/copa-sub-13-nandu/participantes');
+    assert.equal(blocked.status, 409);
+
+    const id = '/copa-sub-13-nandu-2';
+    for (const name of ['Ana', 'Bea', 'Caro']) {
+      await request('POST', `${id}/participantes`, { name, delegation: '', ranking: null });
+    }
+    await request('POST', `${id}/grupos/sorteo`, { groupSize: 3 });
+    const { status, data } = await request('DELETE', `${id}/participantes`);
+    assert.equal(status, 200);
+    assert.deepEqual(data.players, []);
+    assert.equal(data.groupStage, null);
+  });
 });
 
 describe('Eliminar torneo', () => {

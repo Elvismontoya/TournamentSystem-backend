@@ -486,6 +486,26 @@ export function removePlayer(tournamentId: string, playerId: string): Tournament
 }
 
 /**
+ * Removes every registered player. Not allowed once results are entered; before that, the
+ * group draw and the bracket (if any) are removed too, since they no longer have players.
+ */
+export function removeAllPlayers(tournamentId: string): TournamentView {
+  const tournament = load(tournamentId);
+  if (hasResults(tournament) || knockoutStarted(tournament)) {
+    throw new HttpError(
+      409,
+      'Ya hay resultados cargados: no se puede eliminar a todos los jugadores.',
+    );
+  }
+  tournament.players = [];
+  tournament.groups = null;
+  tournament.results = {};
+  tournament.knockout = null;
+  tournament.knockoutResults = {};
+  return save(tournament);
+}
+
+/**
  * Header row ("Nombre, Delegación, Ranking") is skipped if present. It is blanked rather than
  * removed, so error messages keep the line numbers the user sees.
  */
