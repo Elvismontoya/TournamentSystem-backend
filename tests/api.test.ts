@@ -85,8 +85,8 @@ describe('API del torneo', () => {
       text: 'Nombre, Delegación, Ranking\nAna Gómez, Club Sur, 1700\nMal, X, abc',
       dryRun: true,
     });
-    // "Mal, X, abc" is the 3rd line the user typed (the header counts as line 1).
-    assert.deepEqual(preview.data.errors, ['Línea 3: el ranking «abc» no es un número.']);
+    // "Mal, X, abc" is the 3rd row (the header counts as row 1).
+    assert.deepEqual(preview.data.errors, ['Fila 3: el ranking «abc» no es un número.']);
 
     const rejected = await call('POST', '/participantes/importar', { text: 'Mal, X, abc' });
     assert.equal(rejected.status, 400);

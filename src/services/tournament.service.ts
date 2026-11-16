@@ -21,9 +21,11 @@ import {
   type Scoring,
 } from '../domain/groupStage.ts';
 import { drawKnockout, knockoutMatchKey, moveSlot, type BracketSlot } from '../domain/knockout.ts';
+import { readPlayerRows } from '../domain/playerImport.ts';
 import {
+  individualPlayers,
+  INDIVIDUAL_ONLY,
   nextFreeBib,
-  parsePlayerList,
   sortByRanking,
   type NewPlayer,
   type Player,
@@ -404,6 +406,9 @@ function validateNewPlayer(entry: NewPlayer, players: Player[]): void {
   if (entry.ranking !== null && (!Number.isInteger(entry.ranking) || entry.ranking < 0)) {
     throw new HttpError(400, 'El ranking debe ser un número entero (0 o más).');
   }
+  if (entry.category && entry.category.trim().length > 60) {
+    throw new HttpError(400, 'La categoría admite hasta 60 caracteres.');
+  }
 }
 
 /** Registers players: there is no limit of places ("cupos"). */
@@ -418,13 +423,15 @@ function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
       name: entry.name.trim(),
       delegation: entry.delegation.trim(),
       ranking: entry.ranking,
+      gender: entry.gender ?? null,
+      category: entry.category?.trim() || null,
+      modalities: entry.modalities ?? { ...INDIVIDUAL_ONLY },
     };
   });
   // Players added after the draw stay "sin grupo" until placed by hand or redrawn.
   tournament.players = sortByRanking([...tournament.players, ...added]);
   return added;
 }
-
 export function addPlayer(
   tournamentId: string,
   entry: NewPlayer,
@@ -456,11 +463,14 @@ export function updatePlayer(
     entry,
     tournament.players.filter((candidate) => candidate !== player),
   );
+  // Gender and category only change when sent; modalities (pairs, team) stay as imported.
   Object.assign(player, {
     name: entry.name.trim(),
     delegation: entry.delegation.trim(),
     ranking: entry.ranking,
     bib: entry.bib,
+    ...(entry.gender === undefined ? {} : { gender: entry.gender }),
+    ...(entry.category === undefined ? {} : { category: entry.category?.trim() || null }),
   });
   tournament.players = sortByRanking(tournament.players);
   return save(tournament);
@@ -506,26 +516,33 @@ export function removeAllPlayers(tournamentId: string): TournamentView {
 }
 
 /**
- * Header row ("Nombre, Delegación, Ranking") is skipped if present. It is blanked rather than
- * removed, so error messages keep the line numbers the user sees.
+ * How a spreadsheet would be imported, without importing: the individual players read,
+ * every problem (rows that can't be read, a number already taken…) and how many rows were
+ * skipped (they don't play individual).
  */
-function withoutHeader(text: string): string {
-  const [first = '', ...rest] = text.split(/\r?\n/);
-  return /^\s*nombre\b/i.test(first) ? ['', ...rest].join('\n') : text;
-}
-
-export function previewImport(text: string): { players: NewPlayer[]; errors: string[] } {
-  return parsePlayerList(withoutHeader(text));
+export function previewImport(
+  tournamentId: string,
+  rows: string[][],
+): { players: NewPlayer[]; errors: string[]; skipped: number } {
+  const tournament = load(tournamentId);
+  const { players, errors, skipped } = readPlayerRows(rows);
+  for (const player of players) {
+    const owner = tournament.players.find((candidate) => candidate.bib === player.bib);
+    if (owner) {
+      errors.push(`${player.name}: el número ${String(player.bib)} ya es de ${owner.name}.`);
+    }
+  }
+  return { players, errors, skipped };
 }
 
 export function importPlayers(
   tournamentId: string,
-  text: string,
+  rows: string[][],
 ): { view: TournamentView; added: Player[] } {
   const tournament = load(tournamentId);
-  const { players, errors } = previewImport(text);
+  const { players, errors } = previewImport(tournamentId, rows);
   if (errors.length > 0) {
-    throw new HttpError(400, 'Hay líneas que no se pudieron leer.', errors);
+    throw new HttpError(400, 'Hay filas con problemas: corrígelas en el archivo.', errors);
   }
   if (players.length === 0) throw new HttpError(400, 'La lista está vacía.');
   const added = register(tournament, players);
@@ -546,22 +563,27 @@ function validateGroupSize(groupSize: number): void {
 export function previewGroupDraw(tournamentId: string, groupSize: number): DrawPreview {
   validateGroupSize(groupSize);
   const tournament = load(tournamentId);
-  return drawPreview(tournament.players, groupSize, tournament.settings.seeded);
+  return drawPreview(individualPlayers(tournament.players), groupSize, tournament.settings.seeded);
 }
 
 export function drawTournamentGroups(tournamentId: string, groupSize: number): TournamentView {
   const tournament = load(tournamentId);
   validateGroupSize(groupSize);
   requireGroupStageOpen(tournament);
-  if (tournament.players.length < MIN_GROUP_SIZE) {
-    throw new HttpError(409, `Se necesitan al menos ${String(MIN_GROUP_SIZE)} jugadores.`);
+  // Only the individual event is drawn for now.
+  const players = individualPlayers(tournament.players);
+  if (players.length < MIN_GROUP_SIZE) {
+    throw new HttpError(
+      409,
+      `Se necesitan al menos ${String(MIN_GROUP_SIZE)} jugadores en individual.`,
+    );
   }
   if (hasResults(tournament)) {
     throw new HttpError(409, 'Ya hay resultados cargados: no se puede volver a sortear.');
   }
   tournament.groups = drawGroups(
-    tournament.players,
-    groupCountFor(tournament.players.length, groupSize),
+    players,
+    groupCountFor(players.length, groupSize),
     Math.random,
     tournament.settings.seeded,
   );
@@ -594,6 +616,9 @@ export function setGroupPlayers(
   const players = playerIds.map((id) => {
     const player = tournament.players.find((candidate) => candidate.id === id);
     if (!player) throw new HttpError(400, 'Hay un jugador que no está inscrito.');
+    if (!player.modalities.individual) {
+      throw new HttpError(400, `${player.name} no juega individual: no puede estar en un grupo.`);
+    }
     return player;
   });
 

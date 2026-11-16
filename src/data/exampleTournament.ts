@@ -2,11 +2,11 @@
 // Loaded into the in-memory repository at startup; later it becomes a database seeder.
 
 import { DEFAULT_GROUP_SIZE, DEFAULT_RULES } from '../domain/groupStage.ts';
-import type { Player } from '../domain/players.ts';
+import { INDIVIDUAL_ONLY, type Player } from '../domain/players.ts';
 import type { TournamentSettings } from '../models/tournament.ts';
 
 /** Listed by ranking; `bib` is the registration number (Nr.), independent of ranking. */
-export const EXAMPLE_PLAYERS: Player[] = [
+const EXAMPLE_ROWS: Pick<Player, 'id' | 'bib' | 'name' | 'delegation' | 'ranking'>[] = [
   { id: 'p01', bib: 7, name: 'Carlos Silva', delegation: 'Club Universitario', ranking: 2150 },
   { id: 'p02', bib: 12, name: 'Marcos Ruiz', delegation: 'TM Los Andes', ranking: 2080 },
   { id: 'p03', bib: 3, name: 'Andrés Peña', delegation: 'Club Central', ranking: 1990 },
@@ -24,6 +24,14 @@ export const EXAMPLE_PLAYERS: Player[] = [
   { id: 'p15', bib: 13, name: 'Esteban Ríos', delegation: 'Liga del Valle', ranking: 1500 },
   { id: 'p16', bib: 8, name: 'Gabriel Ramos', delegation: 'Academia Spin', ranking: null },
 ];
+
+/** Men's singles, open category: everyone plays individual only. */
+export const EXAMPLE_PLAYERS: Player[] = EXAMPLE_ROWS.map((row) => ({
+  ...row,
+  gender: 'M',
+  category: 'Mayores (Libre)',
+  modalities: { ...INDIVIDUAL_ONLY },
+}));
 
 export const EXAMPLE_SETTINGS: TournamentSettings = {
   sport: 'Tenis de mesa',

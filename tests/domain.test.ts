@@ -29,7 +29,8 @@ import {
   type KnockoutDraw,
 } from '../src/domain/knockout.ts';
 import { DEFAULT_RULES } from '../src/domain/groupStage.ts';
-import { nextFreeBib, parsePlayerList, sortByRanking, type Player } from '../src/domain/players.ts';
+import { categoryName, readPlayerRows, textToRows } from '../src/domain/playerImport.ts';
+import { INDIVIDUAL_ONLY, nextFreeBib, sortByRanking, type Player } from '../src/domain/players.ts';
 import { finalRanking, type RankingEntry } from '../src/domain/ranking.ts';
 
 const player = (bib: number, ranking: number | null = null): Player => ({
@@ -38,6 +39,9 @@ const player = (bib: number, ranking: number | null = null): Player => ({
   name: `Jugador ${String(bib)}`,
   delegation: 'Club',
   ranking,
+  gender: 'M',
+  category: null,
+  modalities: { ...INDIVIDUAL_ONLY },
 });
 
 /** Sets for a match the first player wins `home`-`away` (11-5 each set). */
@@ -554,14 +558,139 @@ describe('inscripción', () => {
     );
   });
 
-  it('lee la lista pegada y reporta las líneas mal escritas', () => {
-    const { players, errors } = parsePlayerList(
-      'Ana Gómez, Club Sur, 1700\nPedro Lara; Liga Este\n\nMal Ranking, X, abc',
+  it('una lista sin encabezado se lee como nombre, delegación, ranking (individual)', () => {
+    const { players, errors } = readPlayerRows(
+      textToRows('Ana Gómez, Club Sur, 1700\nPedro Lara; Liga Este\n\nMal Ranking, X, abc'),
     );
-    assert.deepEqual(players, [
-      { name: 'Ana Gómez', delegation: 'Club Sur', ranking: 1700 },
-      { name: 'Pedro Lara', delegation: 'Liga Este', ranking: null },
-    ]);
-    assert.deepEqual(errors, ['Línea 4: el ranking «abc» no es un número.']);
+    assert.deepEqual(
+      players.map((entry) => [entry.name, entry.delegation, entry.ranking]),
+      [
+        ['Ana Gómez', 'Club Sur', 1700],
+        ['Pedro Lara', 'Liga Este', null],
+      ],
+    );
+    assert.deepEqual(players[0]?.modalities, INDIVIDUAL_ONLY);
+    assert.deepEqual(errors, ['Fila 4: el ranking «abc» no es un número.']);
+  });
+
+  describe('planilla de la federación (solo individual por ahora)', () => {
+    // Same columns as the federation's spreadsheet (title row above the headers).
+    const rows = [
+      ['INSCRIPCIONES'],
+      [
+        'NUMBER',
+        'ID',
+        'NOMBRE',
+        'LIGA',
+        'CÓDIGO',
+        'GÉNERO',
+        'RK_POINTS',
+        'RK_POSITION',
+        'TEAM',
+        'FECH NAC',
+        'Remarks',
+        'IND',
+        'DB',
+        'DX',
+        'CATEG',
+      ],
+      [
+        '1',
+        '',
+        'Vanesa Mazo',
+        'AMAGÁ',
+        'AMAGÁ',
+        'F',
+        '1500',
+        '3',
+        '',
+        '',
+        '',
+        'X',
+        '',
+        'DX1',
+        'SUB19',
+      ],
+      [
+        '3',
+        '',
+        'Ana Sofia Montoya',
+        'JARDÍN',
+        'JARDÍN',
+        'F',
+        '',
+        '',
+        '201',
+        '',
+        '',
+        'x',
+        'DF1',
+        '',
+        'Sub 16',
+      ],
+      [
+        '8',
+        '',
+        'Martín Puerta',
+        '',
+        'AMAGÁ',
+        'M',
+        '',
+        '',
+        '102',
+        '',
+        '',
+        'X',
+        'DM1',
+        'DX1',
+        'JUVENIL',
+      ],
+      // Doubles only (no X in IND): skipped for now, not an error.
+      [
+        '42',
+        '',
+        'Daniela Uribe',
+        'AMAGÁ',
+        'AMAGÁ',
+        'F',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        'DX1',
+        'SUB19',
+      ],
+      ['9', '', 'Santiago Tirado', 'AMAGÁ', 'AMAGÁ', 'X', '', '', '', '', '', 'X', '', '', 'SUB19'],
+    ];
+
+    it('lee por encabezado solo a los de individual; los demás se omiten', () => {
+      const { players, errors, skipped } = readPlayerRows(rows);
+      assert.equal(skipped, 1);
+      assert.deepEqual(errors, ['Fila 7: el género «X» debe ser F o M.']);
+      assert.deepEqual(
+        players.map((entry) => [entry.bib, entry.name, entry.delegation, entry.gender]),
+        [
+          [1, 'Vanesa Mazo', 'AMAGÁ', 'F'],
+          [3, 'Ana Sofia Montoya', 'JARDÍN', 'F'],
+          // Empty league: the code is used.
+          [8, 'Martín Puerta', 'AMAGÁ', 'M'],
+        ],
+      );
+      // RK_POINTS is the ranking; DB/DX/TEAM are ignored.
+      assert.equal(players[0]?.ranking, 1500);
+      assert.deepEqual(players[2]?.modalities, INDIVIDUAL_ONLY);
+      assert.deepEqual(
+        players.map((entry) => entry.category),
+        ['Sub 19', 'Sub 16', 'JUVENIL'],
+      );
+    });
+    it('normaliza las categorías conocidas', () => {
+      assert.equal(categoryName('SUB-11'), 'Sub 11');
+      assert.equal(categoryName('Libre'), 'Mayores (Libre)');
+      assert.equal(categoryName(' '), null);
+    });
   });
 });

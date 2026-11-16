@@ -1,5 +1,22 @@
-// Players and registration rules: ranking order, free registration numbers (Nr.)
-// and reading a pasted/CSV player list. Pure functions: no UI, no database, no HTTP.
+// Players and registration rules: ranking order, free registration numbers (Nr.),
+// modalities and doubles/team codes. Pure functions: no UI, no database, no HTTP.
+
+export type Gender = 'F' | 'M';
+
+/**
+ * What each player plays. Doubles, mixed doubles and teams hold a code shared by the
+ * partners/teammates ("DF1", "DX2", "201"), as in the federation's spreadsheets; null = doesn't
+ * play it.
+ */
+export interface PlayerModalities {
+  individual: boolean;
+  /** Doubles (men's or women's) pair code. */
+  doubles: string | null;
+  /** Mixed doubles pair code. */
+  mixed: string | null;
+  /** Team code. */
+  team: string | null;
+}
 
 export interface Player {
   id: string;
@@ -9,6 +26,23 @@ export interface Player {
   /** Delegation, league, club or team the player represents. */
   delegation: string;
   ranking: number | null;
+  gender: Gender | null;
+  /** Age category ("Sub 13", "Mayores (Libre)"…), or null if not given. */
+  category: string | null;
+  modalities: PlayerModalities;
+}
+
+/** Only individual play (the default for players added by hand). */
+export const INDIVIDUAL_ONLY: PlayerModalities = {
+  individual: true,
+  doubles: null,
+  mixed: null,
+  team: null,
+};
+
+/** Players who play the individual event (the only one the draw handles for now). */
+export function individualPlayers(players: Player[]): Player[] {
+  return players.filter((player) => player.modalities.individual);
 }
 
 /** Highest ranking first; players without ranking go last (keeping their order). */
@@ -64,31 +98,8 @@ export interface NewPlayer {
   delegation: string;
   ranking: number | null;
   bib?: number;
-}
-
-/**
- * Reads a pasted list, one player per line: "name, delegation, ranking points".
- * Fields may be separated by comma, semicolon or tab; delegation and ranking are optional.
- * Lines that can't be read are returned in `errors` (1-based line numbers).
- */
-export function parsePlayerList(text: string): { players: NewPlayer[]; errors: string[] } {
-  const players: NewPlayer[] = [];
-  const errors: string[] = [];
-  text.split(/\r?\n/).forEach((line, index) => {
-    if (line.trim() === '') return;
-    const [name = '', delegation = '', ranking = '', ...rest] = line
-      .split(/[,;\t]/)
-      .map((field) => field.trim());
-    const lineNumber = String(index + 1);
-    if (name === '' || rest.some((field) => field !== '')) {
-      errors.push(`Línea ${lineNumber}: usa «nombre, delegación, ranking».`);
-      return;
-    }
-    if (ranking !== '' && !/^\d+$/.test(ranking)) {
-      errors.push(`Línea ${lineNumber}: el ranking «${ranking}» no es un número.`);
-      return;
-    }
-    players.push({ name, delegation, ranking: ranking === '' ? null : Number(ranking) });
-  });
-  return { players, errors };
+  gender?: Gender | null;
+  category?: string | null;
+  /** Left out: individual only. */
+  modalities?: PlayerModalities;
 }

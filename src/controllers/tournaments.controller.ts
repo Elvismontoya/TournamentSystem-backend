@@ -1,6 +1,8 @@
 // Controllers: read the request, call a service, write the response (no rules here).
 import type { Request, RequestHandler } from 'express';
 import type { BracketSlot } from '../domain/knockout.ts';
+import { textToRows } from '../domain/playerImport.ts';
+import type { Gender } from '../domain/players.ts';
 import { HttpError } from '../httpError.ts';
 import * as service from '../services/tournament.service.ts';
 import {
@@ -75,14 +77,35 @@ export const deleteTournament: RequestHandler = (request, response) => {
   response.sendStatus(204);
 };
 
+/** "F", "M" or null (not given). */
+function genderOf(value: unknown): Gender | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (value === 'F' || value === 'M') return value;
+  throw new HttpError(400, '«gender» debe ser "F", "M" o null.');
+}
+
+/** Gender and category of a player, only when sent (an edit may leave them out). */
+function playerDetails(data: Record<string, unknown>): {
+  gender?: Gender | null;
+  category?: string | null;
+} {
+  return {
+    ...(data.gender === undefined ? {} : { gender: genderOf(data.gender) }),
+    ...(data.category === undefined ? {} : { category: strOrNull(data.category, 'category') }),
+  };
+}
+
 export const addPlayer: RequestHandler = (request, response) => {
   const data = body(request);
   const bib = intOrNull(data.bib, 'bib');
+  const individual = data.individual === undefined ? true : bool(data.individual, 'individual');
   const result = service.addPlayer(id(request), {
     name: str(data.name, 'name'),
     delegation: optionalStr(data.delegation, 'delegation'),
     ranking: intOrNull(data.ranking, 'ranking'),
     ...(bib === null ? {} : { bib }),
+    ...playerDetails(data),
+    modalities: { individual, doubles: null, mixed: null, team: null },
   });
   response.status(201).json(result);
 };
@@ -97,10 +120,10 @@ export const updatePlayer: RequestHandler = (request, response) => {
       delegation: optionalStr(data.delegation, 'delegation'),
       ranking: intOrNull(data.ranking, 'ranking'),
       bib: int(data.bib, 'bib'),
+      ...playerDetails(data),
     }),
   );
 };
-
 export const removeAllPlayers: RequestHandler = (request, response) => {
   response.json(service.removeAllPlayers(id(request)));
 };
@@ -109,17 +132,31 @@ export const removePlayer: RequestHandler = (request, response) => {
   response.json(service.removePlayer(id(request), playerId(request)));
 };
 
-/** With { dryRun: true } it only reads the list and returns what would be imported. */
+/** Rows of the spreadsheet: a list of rows, each a list of cell texts. */
+function rowsOf(value: unknown): string[][] {
+  if (
+    !Array.isArray(value) ||
+    !value.every((row) => Array.isArray(row) && row.every((cell) => typeof cell === 'string'))
+  ) {
+    throw new HttpError(400, '«rows» debe ser una lista de filas (listas de textos).');
+  }
+  return value;
+}
+
+/**
+ * Imports players from a spreadsheet: { rows } (cells of the first sheet, read by the
+ * frontend) or { text } (a pasted list). With { dryRun: true } it only reads them and
+ * returns what would be imported, with every problem found.
+ */
 export const importPlayers: RequestHandler = (request, response) => {
   const data = body(request);
-  const text = str(data.text, 'text');
+  const rows = data.rows === undefined ? textToRows(str(data.text, 'text')) : rowsOf(data.rows);
   if (data.dryRun === true) {
-    response.json(service.previewImport(text));
+    response.json(service.previewImport(id(request), rows));
     return;
   }
-  response.status(201).json(service.importPlayers(id(request), text));
+  response.status(201).json(service.importPlayers(id(request), rows));
 };
-
 export const previewGroupDraw: RequestHandler = (request, response) => {
   const size = Number(request.query.tamano);
   if (!Number.isInteger(size)) throw new HttpError(400, '«tamano» debe ser un número entero.');

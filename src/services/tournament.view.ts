@@ -39,7 +39,7 @@ import {
   type PlayedKnockout,
   type SlotPlayer,
 } from '../domain/knockout.ts';
-import { nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
+import { individualPlayers, nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
 import { finalRanking, knockoutFinished, type RankingEntry } from '../domain/ranking.ts';
 import type { Tournament } from '../models/tournament.ts';
 
@@ -357,7 +357,10 @@ function groupStageOf(tournament: Tournament): GroupStageView | null {
 
   return {
     groups: views,
-    withoutGroup: tournament.players.filter((player) => !locatePlayer(groups, player)),
+    // Individual players registered after the draw (or taken out by hand).
+    withoutGroup: individualPlayers(tournament.players).filter(
+      (player) => !locatePlayer(groups, player),
+    ),
     played: views.reduce((sum, group) => sum + group.finished, 0),
     total: views.reduce((sum, group) => sum + group.total, 0),
     hasResults: views.some((group) => group.hasResults),
@@ -368,9 +371,10 @@ function groupStageOf(tournament: Tournament): GroupStageView | null {
 /** Seeds: before the draw, the top of the ranking for the default group size; after it,
  * the best-ranked players among those in a group, one per group. None if seeding is off. */
 function seedsOf(tournament: Tournament): Player[] {
-  const { groups, players, settings } = tournament;
+  const { groups, settings } = tournament;
   if (!settings.seeded) return [];
   if (!groups) {
+    const players = individualPlayers(tournament.players);
     return players.slice(0, groupCountFor(players.length, settings.defaultGroupSize));
   }
   return sortByRanking(groups.flatMap((group) => group.players)).slice(0, groups.length);
