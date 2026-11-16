@@ -27,13 +27,12 @@ export const EXAMPLE_PLAYERS: Player[] = [
 
 export const EXAMPLE_SETTINGS: TournamentSettings = {
   sport: 'Tenis de mesa',
-  category: 'Individual masculino',
+  format: 'Grupos + eliminación',
+  modalities: ['Individual'],
+  categories: ['Mayores (Libre)'],
   startDate: '2026-11-15',
   endDate: '2026-11-16',
   location: 'Coliseo Central',
-  participantType: 'Individual',
-  format: 'Grupos + eliminación',
-  capacity: 32,
   defaultGroupSize: DEFAULT_GROUP_SIZE,
   qualifiersPerGroup: 2,
   seeded: true,

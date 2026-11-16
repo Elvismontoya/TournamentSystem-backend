@@ -6,6 +6,8 @@ export const tournamentsRouter = Router();
 
 const base = '/:tournamentId';
 
+tournamentsRouter.get('/', controller.listTournaments);
+tournamentsRouter.post('/', controller.createTournament);
 tournamentsRouter.get(base, controller.getTournament);
 tournamentsRouter.delete(base, controller.deleteTournament);
 
@@ -26,6 +28,10 @@ tournamentsRouter.put(
   `${base}/grupos/:groupIndex/partidos/:matchIndex/sets/:setIndex`,
   controller.updateSet,
 );
+tournamentsRouter.put(
+  `${base}/grupos/:groupIndex/partidos/:matchIndex/marcador`,
+  controller.updateScore,
+);
 tournamentsRouter.put(`${base}/grupos/:groupIndex/partidos/:matchIndex/wo`, controller.setWalkover);
 
 // Knockout
@@ -34,6 +40,10 @@ tournamentsRouter.put(`${base}/llaves/posiciones/:position`, controller.moveKnoc
 tournamentsRouter.put(
   `${base}/llaves/rondas/:round/partidos/:matchIndex/sets/:setIndex`,
   controller.updateKnockoutSet,
+);
+tournamentsRouter.put(
+  `${base}/llaves/rondas/:round/partidos/:matchIndex/marcador`,
+  controller.updateKnockoutScore,
 );
 tournamentsRouter.put(
   `${base}/llaves/rondas/:round/partidos/:matchIndex/wo`,

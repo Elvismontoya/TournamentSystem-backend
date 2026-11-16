@@ -48,6 +48,13 @@ export function bool(value: unknown, field: string): boolean {
   return value;
 }
 
+export function strList(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
+    throw new HttpError(400, `«${field}» debe ser una lista de textos.`);
+  }
+  return value;
+}
+
 export function strOrNull(value: unknown, field: string): string | null {
   return value === undefined || value === null ? null : str(value, field);
 }

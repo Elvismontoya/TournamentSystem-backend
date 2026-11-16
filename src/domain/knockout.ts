@@ -89,7 +89,7 @@ function firstRoundClashes(slots: (BracketSlot | null)[], playerOf: SlotPlayer):
 }
 
 /**
- * Draws the main bracket for `groupCount` groups with 2 qualifiers each:
+ * Draws the main bracket for `groupCount` groups with `qualifiersPerGroup` (1 or 2) each:
  * group winners are seeded by group number (winner of group 1 = seed 1); each runner-up is
  * drawn into the half OPPOSITE to its own group winner, so they can only meet in the final.
  * When the bracket isn't full, the best seeds get byes.
@@ -100,8 +100,9 @@ export function drawKnockout(
   groupCount: number,
   random: () => number = Math.random,
   playerOf: SlotPlayer = () => null,
+  qualifiersPerGroup: 1 | 2 = 2,
 ): KnockoutDraw {
-  const size = bracketSize(groupCount * 2);
+  const size = bracketSize(groupCount * qualifiersPerGroup);
   const slots = Array.from({ length: size }, (): BracketSlot | null => null);
   const half = (position: number) => (position <= size / 2 ? 0 : 1);
 
@@ -109,6 +110,12 @@ export function drawKnockout(
   winnerPositions.forEach((position, groupIndex) => {
     slots[position - 1] = { kind: 'qualifier', place: 1, groupIndex };
   });
+
+  if (qualifiersPerGroup === 1) {
+    // Only winners: the empty positions (where the missing seeds would go) are byes.
+    const filled = slots.map((slot): BracketSlot => slot ?? { kind: 'bye' });
+    return { size, slots: filled, warnings: drawWarnings(filled) };
+  }
 
   // Byes go against the best seeds.
   const byes = size - groupCount * 2;

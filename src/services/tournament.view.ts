@@ -26,6 +26,7 @@ import {
   type MatchResult,
   type MatchSummary,
   type Pairing,
+  type Scoring,
 } from '../domain/groupStage.ts';
 import {
   bracketSize,
@@ -45,20 +46,20 @@ import type { Tournament } from '../models/tournament.ts';
 /** Tournament settings plus limits, flattened for the frontend (Configuración and the rest). */
 export interface SettingsView {
   sport: string;
-  category: string;
+  format: string;
+  modalities: string[];
+  categories: string[];
   startDate: string | null;
   endDate: string | null;
   location: string;
-  participantType: string;
-  format: string;
-  capacity: number;
-  /** Lowest capacity allowed (players already registered, at least 2). */
-  minCapacity: number;
   minGroupSize: number;
   maxGroupSize: number;
   defaultGroupSize: number;
+  /** 1 or 2. */
   qualifiersPerGroup: number;
   seeded: boolean;
+  /** Results entered with the points of each set ("points") or the final score ("sets"). */
+  scoring: Scoring;
   /** Group matches: best of N sets. */
   setsPerMatch: number;
   setsToWin: number;
@@ -182,19 +183,18 @@ function settingsOf(tournament: Tournament): SettingsView {
   const { groupRules: rules, ...settings } = tournament.settings;
   return {
     sport: settings.sport,
-    category: settings.category,
+    format: settings.format,
+    modalities: settings.modalities,
+    categories: settings.categories,
     startDate: settings.startDate,
     endDate: settings.endDate,
     location: settings.location,
-    participantType: settings.participantType,
-    format: settings.format,
-    capacity: settings.capacity,
-    minCapacity: Math.max(2, tournament.players.length),
     minGroupSize: MIN_GROUP_SIZE,
     maxGroupSize: MAX_GROUP_SIZE,
     defaultGroupSize: settings.defaultGroupSize,
     qualifiersPerGroup: settings.qualifiersPerGroup,
     seeded: settings.seeded,
+    scoring: rules.scoring,
     setsPerMatch: rules.setsPerMatch,
     setsToWin: setsToWin(rules),
     gamePoints: rules.gamePoints,

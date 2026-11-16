@@ -13,9 +13,15 @@ export interface Group {
 /** Points of one set: [first player, second player]; null = not entered yet. */
 export type SetScore = [number | null, number | null];
 
+/** Sets won by each player at the end of a match ("3-1"); null = not entered yet. */
+export type FinalScore = [number | null, number | null];
+
 /** What was entered for one match. */
 export interface MatchResult {
+  /** Points of each set (scoring "points"). */
   sets: SetScore[];
+  /** Final score in sets only (scoring "sets"). */
+  score?: FinalScore;
   /** Side (0 = first player, 1 = second) that didn't show up: the other wins by walkover. */
   walkover?: 0 | 1;
 }
@@ -92,11 +98,19 @@ export function groupSizes(players: number, groupCount: number): number[] {
   return Array.from({ length: groupCount }, (_, index) => base + (index < extra ? 1 : 0));
 }
 
+/**
+ * What is entered for each match: the points of every set ("points": 11-8, 9-11…) or only
+ * the final score in sets ("sets": 3-1). With "sets" there are no game points, so the
+ * point-ratio tie-break doesn't apply.
+ */
+export type Scoring = 'points' | 'sets';
+
 /** How a group match is played and scored (set in the tournament's Configuración). */
 export interface GroupRules {
   /** Best of N sets (odd). */
   setsPerMatch: number;
-  /** Points to win a set. */
+  scoring: Scoring;
+  /** Points to win a set (only with scoring "points"). */
   gamePoints: number;
   /** Minimum lead to win a set (2 = "deuce" past gamePoints - 1). */
   winMargin: number;
@@ -107,6 +121,7 @@ export interface GroupRules {
 /** ITTF defaults: best of 5, sets to 11 by 2; win 2, loss 1, no-show 0. */
 export const DEFAULT_RULES: GroupRules = {
   setsPerMatch: 5,
+  scoring: 'points',
   gamePoints: 11,
   winMargin: 2,
   points: { win: 2, loss: 1, walkover: 0 },
@@ -289,7 +304,7 @@ function walkoverSummary(absent: 0 | 1, rules: GroupRules): MatchSummary {
   const sets: [number, number] = [0, 0];
   const points: [number, number] = [0, 0];
   sets[winner] = toWin;
-  points[winner] = rules.gamePoints * toWin;
+  if (rules.scoring === 'points') points[winner] = rules.gamePoints * toWin;
   return {
     sets,
     points,
@@ -301,17 +316,53 @@ function walkoverSummary(absent: 0 | 1, rules: GroupRules): MatchSummary {
   };
 }
 
+/** Valid final score: one side reached the sets to win, the other has fewer. */
+export function validFinalScore([first, second]: FinalScore, rules: GroupRules): boolean {
+  if (first === null || second === null) return false;
+  const toWin = setsToWin(rules);
+  return Math.max(first, second) === toWin && Math.min(first, second) < toWin;
+}
+
+/** A match entered as a final score in sets (scoring "sets"): no game points. */
+function finalScoreSummary(score: FinalScore | undefined, rules: GroupRules): MatchSummary {
+  const started = score !== undefined && (score[0] !== null || score[1] !== null);
+  if (!score || !validFinalScore(score, rules)) {
+    return {
+      sets: [0, 0],
+      points: [0, 0],
+      decidedSets: 0,
+      started,
+      finished: false,
+      winner: null,
+      walkover: false,
+    };
+  }
+  const sets: [number, number] = [score[0] ?? 0, score[1] ?? 0];
+  return {
+    sets,
+    points: [0, 0],
+    decidedSets: sets[0] + sets[1],
+    started: true,
+    finished: true,
+    winner: sets[0] > sets[1] ? 0 : 1,
+    walkover: false,
+  };
+}
+
 export function summarizeMatch(
   result: MatchResult | undefined,
   rules: GroupRules = DEFAULT_RULES,
 ): MatchSummary {
   if (result?.walkover !== undefined) return walkoverSummary(result.walkover, rules);
+  if (rules.scoring === 'sets') return finalScoreSummary(result?.score, rules);
+  // A final score entered under the other mode still counts as "something was entered".
+  const scoreStarted = result?.score?.some((value) => value !== null) ?? false;
 
   const toWin = setsToWin(rules);
   const won: [number, number] = [0, 0];
   const points: [number, number] = [0, 0];
   let decidedSets = 0;
-  let started = false;
+  let started = scoreStarted;
 
   for (const set of result?.sets ?? []) {
     if (set[0] !== null || set[1] !== null) started = true;
@@ -347,8 +398,14 @@ export function setNotation(
   rules: GroupRules = DEFAULT_RULES,
 ): string {
   if (result?.walkover !== undefined) return 'W.O.';
-  const toWin = setsToWin(rules);
   const other = side === 0 ? 1 : 0;
+  if (rules.scoring === 'sets') {
+    // Only the final score: "3-1" from this player's side.
+    const score = result?.score;
+    if (!score || !validFinalScore(score, rules)) return '';
+    return `${String(score[side] ?? 0)}-${String(score[other] ?? 0)}`;
+  }
+  const toWin = setsToWin(rules);
   const parts: string[] = [];
   let won: [number, number] = [0, 0];
   for (const set of result?.sets ?? []) {
@@ -480,8 +537,9 @@ const TIE_CRITERIA: [Exclude<TieCriterion, 'unresolved'>, (a: TieStats, b: TieSt
 
 /**
  * ITTF tie-break: order tied players using ONLY the matches between them —
- * match points → set ratio → point ratio. When a criterion separates some players but
- * leaves others still tied, the remaining ones restart from match points among themselves.
+ * match points → set ratio → point ratio (only when set points are entered). When a
+ * criterion separates some players but leaves others still tied, the remaining ones
+ * restart from match points among themselves.
  */
 function resolveTie(
   players: StandingRow[],
@@ -489,8 +547,11 @@ function resolveTie(
   rules: GroupRules,
 ): { order: StandingRow[]; decidedBy: TieCriterion } {
   const stats = statsBetween(players, decided, rules);
+  const criteria = TIE_CRITERIA.filter(
+    ([criterion]) => criterion !== 'points' || rules.scoring === 'points',
+  );
 
-  for (const [criterion, compare] of TIE_CRITERIA) {
+  for (const [criterion, compare] of criteria) {
     const sorted = stats.toSorted(compare);
     const buckets: TieStats[][] = [];
     for (const entry of sorted) {

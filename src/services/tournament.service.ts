@@ -3,6 +3,7 @@
 
 import {
   anyResults,
+  DEFAULT_GROUP_SIZE,
   DEFAULT_RULES,
   drawGroups,
   emptySets,
@@ -13,8 +14,11 @@ import {
   MIN_GROUP_SIZE,
   pairingsFor,
   replaceGroupPlayers,
+  setsToWin,
+  type GroupRules,
   type MatchResult,
   type Results,
+  type Scoring,
 } from '../domain/groupStage.ts';
 import { drawKnockout, knockoutMatchKey, moveSlot, type BracketSlot } from '../domain/knockout.ts';
 import {
@@ -25,10 +29,11 @@ import {
   type Player,
 } from '../domain/players.ts';
 import { HttpError } from '../httpError.ts';
-import type { Tournament } from '../models/tournament.ts';
+import type { Tournament, TournamentSettings } from '../models/tournament.ts';
 import {
   deleteTournament as removeTournament,
   findTournament,
+  listTournaments as findAllTournaments,
   saveTournament,
 } from '../repositories/tournament.repository.ts';
 import {
@@ -87,32 +92,53 @@ export function getTournament(tournamentId: string): TournamentView {
 
 /* ---------- Settings ---------- */
 
-/** What Configuración sends: the name plus every editable setting (flat). */
+/**
+ * What the creation wizard and Configuración send: the name plus every setting (flat).
+ * Fields marked optional keep their current value when left out (or the default when
+ * creating).
+ */
 export interface SettingsUpdate {
   name: string;
   sport: string;
-  category: string;
+  format: string;
+  modalities: string[];
+  categories: string[];
   startDate: string | null;
   endDate: string | null;
   location: string;
-  participantType: string;
-  format: string;
-  capacity: number;
   defaultGroupSize: number;
+  qualifiersPerGroup?: number;
   seeded: boolean;
+  scoring?: Scoring;
   setsPerMatch: number;
   gamePoints: number;
   winMargin: number;
   knockoutSetsPerMatch: number;
-  /** Left out (undefined): keeps the current value. */
   thirdPlaceMatch?: boolean;
   pointsWin: number;
   pointsLoss: number;
   pointsWalkover: number;
 }
 
+/** Settings of a brand-new tournament, before the wizard's values are applied. */
+const NEW_TOURNAMENT_SETTINGS: TournamentSettings = {
+  sport: 'Tenis de mesa',
+  format: 'Grupos + eliminación',
+  modalities: ['Individual'],
+  categories: [],
+  startDate: null,
+  endDate: null,
+  location: '',
+  defaultGroupSize: DEFAULT_GROUP_SIZE,
+  qualifiersPerGroup: 2,
+  seeded: true,
+  groupRules: DEFAULT_RULES,
+  knockoutSetsPerMatch: 5,
+  thirdPlaceMatch: false,
+};
+
 const MAX_TEXT = 100;
-const MAX_CAPACITY = 1024;
+const MAX_NAMES = 30;
 
 function text(value: string, label: string, required = false): string {
   const trimmed = value.trim();
@@ -121,6 +147,16 @@ function text(value: string, label: string, required = false): string {
     throw new HttpError(400, `${label} admite hasta ${String(MAX_TEXT)} caracteres.`);
   }
   return trimmed;
+}
+
+/** A list of catalog names (modalities, categories): trimmed, without repeats, at least one. */
+function names(values: string[], label: string): string[] {
+  const cleaned = [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+  if (cleaned.length === 0) throw new HttpError(400, `Elige al menos una ${label}.`);
+  if (cleaned.length > MAX_NAMES || cleaned.some((value) => value.length > MAX_TEXT)) {
+    throw new HttpError(400, `Hay demasiadas ${label}s o alguna es demasiado larga.`);
+  }
+  return cleaned;
 }
 
 function intIn(value: number, min: number, max: number, message: string): number {
@@ -148,40 +184,43 @@ function bestOf(value: number, label: string): number {
 }
 
 /**
- * Saves Configuración. Match rules (sets per match, points per set, margin) can't change
- * once results are entered, since they decide who won each match already played.
+ * Checks every setting and returns the tournament's new name and settings. Match rules
+ * (sets per match, scoring mode, points per set, margin) can't change once results are
+ * entered, since they decide who won each match already played.
  */
-export function updateSettings(tournamentId: string, update: SettingsUpdate): TournamentView {
-  const tournament = load(tournamentId);
+function checkedSettings(
+  tournament: Tournament,
+  update: SettingsUpdate,
+): { name: string; settings: TournamentSettings } {
   const current = tournament.settings;
 
   const name = text(update.name, 'el nombre del torneo', true);
   const startDate = isoDate(update.startDate, 'fecha de inicio');
+  if (startDate === null) throw new HttpError(400, 'Elige la fecha de inicio.');
   const endDate = isoDate(update.endDate, 'fecha de fin');
-  if (startDate && endDate && endDate < startDate) {
+  if (endDate && endDate < startDate) {
     throw new HttpError(400, 'La fecha de fin no puede ser anterior a la de inicio.');
   }
 
-  const registered = tournament.players.length;
-  const capacity = intIn(
-    update.capacity,
-    2,
-    MAX_CAPACITY,
-    `Los cupos deben ser un número entre 2 y ${String(MAX_CAPACITY)}.`,
-  );
-  if (capacity < registered) {
-    throw new HttpError(
-      409,
-      `Ya hay ${String(registered)} inscritos: los cupos no pueden ser menos.`,
-    );
-  }
   const defaultGroupSize = intIn(
     update.defaultGroupSize,
     MIN_GROUP_SIZE,
     MAX_GROUP_SIZE,
     `Los grupos deben ser de ${String(MIN_GROUP_SIZE)} a ${String(MAX_GROUP_SIZE)} jugadores.`,
   );
+  const qualifiersPerGroup = update.qualifiersPerGroup ?? current.qualifiersPerGroup;
+  if (qualifiersPerGroup !== 1 && qualifiersPerGroup !== 2) {
+    throw new HttpError(400, 'Clasifican 1 o 2 jugadores por grupo.');
+  }
+  if (qualifiersPerGroup !== current.qualifiersPerGroup && knockoutStarted(tournament)) {
+    throw new HttpError(
+      409,
+      'Las llaves ya tienen resultados: los clasificados por grupo no se pueden cambiar.',
+    );
+  }
 
+  // "points" or "sets" (the controller already checked it).
+  const scoring = update.scoring ?? current.groupRules.scoring;
   const setsPerMatch = bestOf(update.setsPerMatch, 'Fase de grupos');
   const knockoutSetsPerMatch = bestOf(update.knockoutSetsPerMatch, 'Llaves');
   const gamePoints = intIn(update.gamePoints, 1, 99, 'Los puntos por set van de 1 a 99.');
@@ -205,16 +244,16 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
   const rules = current.groupRules;
   const rulesChanged =
     setsPerMatch !== rules.setsPerMatch ||
+    scoring !== rules.scoring ||
     gamePoints !== rules.gamePoints ||
     winMargin !== rules.winMargin;
   if (rulesChanged && (hasResults(tournament) || knockoutStarted(tournament))) {
     throw new HttpError(
       409,
-      'Ya hay resultados cargados: los sets por partido, los puntos por set y la diferencia mínima no se pueden cambiar.',
+      'Ya hay resultados cargados: los sets por partido, la forma de cargar resultados, los puntos por set y la diferencia mínima no se pueden cambiar.',
     );
   }
-  const knockoutSetsChanged = knockoutSetsPerMatch !== current.knockoutSetsPerMatch;
-  if (knockoutSetsChanged && knockoutStarted(tournament)) {
+  if (knockoutSetsPerMatch !== current.knockoutSetsPerMatch && knockoutStarted(tournament)) {
     throw new HttpError(
       409,
       'Las llaves ya tienen resultados: los sets por partido de las llaves no se pueden cambiar.',
@@ -229,40 +268,122 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
     );
   }
 
-  tournament.name = name;
-  tournament.settings = {
-    ...current,
-    sport: text(update.sport, 'El deporte'),
-    category: text(update.category, 'La categoría'),
-    startDate,
-    endDate,
-    location: text(update.location, 'El lugar'),
-    participantType: text(update.participantType, 'El tipo de participantes'),
-    format: text(update.format, 'El formato'),
-    capacity,
-    defaultGroupSize,
-    seeded: update.seeded,
-    groupRules: {
-      setsPerMatch,
-      gamePoints,
-      winMargin,
-      points: { win: pointsWin, loss: pointsLoss, walkover: pointsWalkover },
+  return {
+    name,
+    settings: {
+      sport: text(update.sport, 'el deporte', true),
+      format: text(update.format, 'el formato', true),
+      modalities: names(update.modalities, 'modalidad'),
+      categories: names(update.categories, 'categoría'),
+      startDate,
+      endDate,
+      location: text(update.location, 'El lugar'),
+      defaultGroupSize,
+      qualifiersPerGroup,
+      seeded: update.seeded,
+      groupRules: {
+        setsPerMatch,
+        scoring,
+        gamePoints,
+        winMargin,
+        points: { win: pointsWin, loss: pointsLoss, walkover: pointsWalkover },
+      },
+      knockoutSetsPerMatch,
+      thirdPlaceMatch,
     },
-    knockoutSetsPerMatch,
-    thirdPlaceMatch,
   };
-  // No results yet: empty scoresheets must match the (possibly new) number of sets.
-  if (setsPerMatch !== rules.setsPerMatch) tournament.results = {};
-  if (knockoutSetsChanged) tournament.knockoutResults = {};
+}
+
+/** Saves Configuración (see checkedSettings for what can't change once there are results). */
+export function updateSettings(tournamentId: string, update: SettingsUpdate): TournamentView {
+  const tournament = load(tournamentId);
+  const previous = tournament.settings;
+  const { name, settings } = checkedSettings(tournament, update);
+  tournament.name = name;
+  tournament.settings = settings;
+
+  // No results yet: empty scoresheets must match the (possibly new) rules.
+  const rules = settings.groupRules;
+  if (
+    rules.setsPerMatch !== previous.groupRules.setsPerMatch ||
+    rules.scoring !== previous.groupRules.scoring
+  ) {
+    tournament.results = {};
+    tournament.knockoutResults = {};
+  }
+  if (settings.knockoutSetsPerMatch !== previous.knockoutSetsPerMatch) {
+    tournament.knockoutResults = {};
+  }
+  // The bracket is drawn for a number of qualifiers: a new number needs a new draw.
+  if (settings.qualifiersPerGroup !== previous.qualifiersPerGroup) {
+    tournament.knockout = null;
+    tournament.knockoutResults = {};
+  }
   // Turned off with nothing entered: drop its (empty) scoresheet, if any.
   const rounds = tournament.knockout ? Math.log2(tournament.knockout.size) : 0;
-  if (!thirdPlaceMatch && rounds >= 2) {
+  if (!settings.thirdPlaceMatch && rounds >= 2) {
     const key = knockoutMatchKey(rounds - 1, 1);
     tournament.knockoutResults = Object.fromEntries(
       Object.entries(tournament.knockoutResults).filter(([candidate]) => candidate !== key),
     );
   }
   return save(tournament);
+}
+
+/** URL-friendly id from the name ("Open Nacional 2026" → "open-nacional-2026"), unique. */
+function newTournamentId(name: string): string {
+  const base =
+    name
+      .normalize('NFD')
+      .replace(/\p{Diacritic}/gu, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'torneo';
+  let id = base;
+  for (let copy = 2; findTournament(id); copy++) id = `${base}-${String(copy)}`;
+  return id;
+}
+
+/** Creates a tournament with every setting from the creation wizard (no players yet). */
+export function createTournament(input: SettingsUpdate): TournamentView {
+  const draft: Tournament = {
+    id: '',
+    name: '',
+    settings: structuredClone(NEW_TOURNAMENT_SETTINGS),
+    players: [],
+    groups: null,
+    results: {},
+    knockout: null,
+    knockoutResults: {},
+  };
+  const { name, settings } = checkedSettings(draft, input);
+  return save({ ...draft, id: newTournamentId(name), name, settings });
+}
+
+/** One line of "Mis torneos". */
+export interface TournamentSummary {
+  id: string;
+  name: string;
+  sport: string;
+  format: string;
+  modalities: string[];
+  categories: string[];
+  startDate: string | null;
+  registered: number;
+}
+
+export function listTournaments(): TournamentSummary[] {
+  return findAllTournaments().map(({ id, name, settings, players }) => ({
+    id,
+    name,
+    sport: settings.sport,
+    format: settings.format,
+    modalities: settings.modalities,
+    categories: settings.categories,
+    startDate: settings.startDate,
+    registered: players.length,
+  }));
 }
 
 export function deleteTournament(tournamentId: string): void {
@@ -285,16 +406,8 @@ function validateNewPlayer(entry: NewPlayer, players: Player[]): void {
   }
 }
 
+/** Registers players: there is no limit of places ("cupos"). */
 function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
-  const remaining = tournament.settings.capacity - tournament.players.length;
-  if (entries.length > remaining) {
-    throw new HttpError(
-      409,
-      remaining === 0
-        ? 'No quedan cupos.'
-        : `Solo quedan ${String(remaining)} cupos y se quieren inscribir ${String(entries.length)}.`,
-    );
-  }
   const assigned: number[] = [];
   const added = entries.map((entry): Player => {
     const bib = entry.bib ?? nextFreeBib(tournament.players, assigned);
@@ -503,8 +616,28 @@ export function updateSet(
   tournament.results = withSet(
     tournament.results,
     key,
-    tournament.settings.groupRules.setsPerMatch,
+    tournament.settings.groupRules,
     setIndex,
+    side,
+    value,
+  );
+  return save(tournament);
+}
+
+/** Final score of a group match in sets ("3-1"), when the tournament is scored by sets. */
+export function updateScore(
+  tournamentId: string,
+  groupIndex: number,
+  matchIndex: number,
+  side: 0 | 1,
+  value: number | null,
+): TournamentView {
+  const tournament = load(tournamentId);
+  const key = requireMatch(tournament, groupIndex, matchIndex);
+  tournament.results = withScore(
+    tournament.results,
+    key,
+    tournament.settings.groupRules,
     side,
     value,
   );
@@ -515,11 +648,15 @@ export function updateSet(
 function withSet(
   results: Results,
   key: string,
-  setsPerMatch: number,
+  rules: GroupRules,
   setIndex: number,
   side: 0 | 1,
   value: number | null,
 ): Results {
+  const { setsPerMatch } = rules;
+  if (rules.scoring === 'sets') {
+    throw new HttpError(409, 'Este torneo se carga solo con el marcador final en sets (3-1).');
+  }
   if (!Number.isInteger(setIndex) || setIndex < 0 || setIndex >= setsPerMatch) {
     throw new HttpError(404, 'Set no encontrado.');
   }
@@ -541,6 +678,38 @@ function withSet(
         return side === 0 ? [value, set[1]] : [set[0], value];
       }),
     },
+  };
+}
+
+/** Results with one side of the final score in sets changed (scoring "sets"). */
+function withScore(
+  results: Results,
+  key: string,
+  rules: GroupRules,
+  side: 0 | 1,
+  value: number | null,
+): Results {
+  if (rules.scoring !== 'sets') {
+    throw new HttpError(409, 'Este torneo se carga con los puntos de cada set.');
+  }
+  const toWin = setsToWin(rules);
+  if (value !== null && (!Number.isInteger(value) || value < 0 || value > toWin)) {
+    throw new HttpError(
+      400,
+      `Al mejor de ${String(rules.setsPerMatch)}, los sets ganados van de 0 a ${String(toWin)}.`,
+    );
+  }
+  const current: MatchResult = results[key] ?? { sets: emptySets(rules) };
+  if (current.walkover !== undefined) {
+    throw new HttpError(
+      409,
+      'El partido está marcado como W.O.: deshazlo para cargar el marcador.',
+    );
+  }
+  const score = current.score ?? [null, null];
+  return {
+    ...results,
+    [key]: { ...current, score: side === 0 ? [value, score[1]] : [score[0], value] },
   };
 }
 
@@ -590,7 +759,12 @@ export function drawTournamentKnockout(tournamentId: string): TournamentView {
   const groups = requireGroups(tournament);
   requireKnockoutNotStarted(tournament);
   // Qualifiers already known are kept apart from their delegation in the first round.
-  tournament.knockout = drawKnockout(groups.length, Math.random, slotPlayerOf(tournament));
+  tournament.knockout = drawKnockout(
+    groups.length,
+    Math.random,
+    slotPlayerOf(tournament),
+    tournament.settings.qualifiersPerGroup,
+  );
   tournament.knockoutResults = {};
   return save(tournament);
 }
@@ -615,6 +789,9 @@ export function moveKnockoutSlot(
       slot.groupIndex >= groups.length
     ) {
       throw new HttpError(400, 'Ese grupo no existe.');
+    }
+    if (slot.place > tournament.settings.qualifiersPerGroup) {
+      throw new HttpError(400, 'En este torneo solo clasifica el 1.º de cada grupo.');
     }
   } else if (!knockout.slots.some((candidate) => candidate.kind === 'bye')) {
     throw new HttpError(400, 'Este cuadro no tiene byes.');
@@ -668,8 +845,27 @@ export function updateKnockoutSet(
   tournament.knockoutResults = withSet(
     tournament.knockoutResults,
     key,
-    knockoutRulesOf(tournament).setsPerMatch,
+    knockoutRulesOf(tournament),
     setIndex,
+    side,
+    value,
+  );
+  return save(tournament);
+}
+
+export function updateKnockoutScore(
+  tournamentId: string,
+  round: number,
+  index: number,
+  side: 0 | 1,
+  value: number | null,
+): TournamentView {
+  const tournament = load(tournamentId);
+  const key = requireKnockoutMatch(tournament, round, index);
+  tournament.knockoutResults = withScore(
+    tournament.knockoutResults,
+    key,
+    knockoutRulesOf(tournament),
     side,
     value,
   );

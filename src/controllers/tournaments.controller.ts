@@ -12,6 +12,7 @@ import {
   optionalStr,
   side,
   str,
+  strList,
   strOrNull,
   textParam,
 } from './parse.ts';
@@ -22,35 +23,51 @@ export const getTournament: RequestHandler = (request, response) => {
   response.json(service.getTournament(id(request)));
 };
 
+/** Body of POST /api/torneos and PUT /configuracion: name plus every setting. */
+function settingsBody(data: Record<string, unknown>): service.SettingsUpdate {
+  const scoring = data.scoring === undefined ? undefined : str(data.scoring, 'scoring');
+  if (scoring !== undefined && scoring !== 'points' && scoring !== 'sets') {
+    throw new HttpError(400, '«scoring» debe ser "points" o "sets".');
+  }
+  return {
+    name: str(data.name, 'name'),
+    sport: str(data.sport, 'sport'),
+    format: str(data.format, 'format'),
+    modalities: strList(data.modalities, 'modalities'),
+    categories: strList(data.categories, 'categories'),
+    startDate: strOrNull(data.startDate, 'startDate'),
+    endDate: strOrNull(data.endDate, 'endDate'),
+    location: optionalStr(data.location, 'location'),
+    defaultGroupSize: int(data.defaultGroupSize, 'defaultGroupSize'),
+    seeded: bool(data.seeded, 'seeded'),
+    setsPerMatch: int(data.setsPerMatch, 'setsPerMatch'),
+    gamePoints: int(data.gamePoints, 'gamePoints'),
+    winMargin: int(data.winMargin, 'winMargin'),
+    knockoutSetsPerMatch: int(data.knockoutSetsPerMatch, 'knockoutSetsPerMatch'),
+    // Optional: left out, they keep their current value (or the default when creating).
+    ...(scoring === undefined ? {} : { scoring }),
+    ...(data.qualifiersPerGroup === undefined
+      ? {}
+      : { qualifiersPerGroup: int(data.qualifiersPerGroup, 'qualifiersPerGroup') }),
+    ...(data.thirdPlaceMatch === undefined
+      ? {}
+      : { thirdPlaceMatch: bool(data.thirdPlaceMatch, 'thirdPlaceMatch') }),
+    pointsWin: int(data.pointsWin, 'pointsWin'),
+    pointsLoss: int(data.pointsLoss, 'pointsLoss'),
+    pointsWalkover: int(data.pointsWalkover, 'pointsWalkover'),
+  };
+}
+
+export const listTournaments: RequestHandler = (_request, response) => {
+  response.json(service.listTournaments());
+};
+
+export const createTournament: RequestHandler = (request, response) => {
+  response.status(201).json(service.createTournament(settingsBody(body(request))));
+};
+
 export const updateSettings: RequestHandler = (request, response) => {
-  const data = body(request);
-  response.json(
-    service.updateSettings(id(request), {
-      name: str(data.name, 'name'),
-      sport: optionalStr(data.sport, 'sport'),
-      category: optionalStr(data.category, 'category'),
-      startDate: strOrNull(data.startDate, 'startDate'),
-      endDate: strOrNull(data.endDate, 'endDate'),
-      location: optionalStr(data.location, 'location'),
-      participantType: optionalStr(data.participantType, 'participantType'),
-      format: optionalStr(data.format, 'format'),
-      capacity: int(data.capacity, 'capacity'),
-      defaultGroupSize: int(data.defaultGroupSize, 'defaultGroupSize'),
-      seeded: bool(data.seeded, 'seeded'),
-      setsPerMatch: int(data.setsPerMatch, 'setsPerMatch'),
-      gamePoints: int(data.gamePoints, 'gamePoints'),
-      winMargin: int(data.winMargin, 'winMargin'),
-      knockoutSetsPerMatch: int(data.knockoutSetsPerMatch, 'knockoutSetsPerMatch'),
-      // Optional: left out, it keeps its current value.
-      thirdPlaceMatch:
-        data.thirdPlaceMatch === undefined
-          ? undefined
-          : bool(data.thirdPlaceMatch, 'thirdPlaceMatch'),
-      pointsWin: int(data.pointsWin, 'pointsWin'),
-      pointsLoss: int(data.pointsLoss, 'pointsLoss'),
-      pointsWalkover: int(data.pointsWalkover, 'pointsWalkover'),
-    }),
-  );
+  response.json(service.updateSettings(id(request), settingsBody(body(request))));
 };
 
 export const deleteTournament: RequestHandler = (request, response) => {
@@ -126,6 +143,32 @@ export const updateSet: RequestHandler = (request, response) => {
       intParam(request, 'groupIndex'),
       intParam(request, 'matchIndex'),
       intParam(request, 'setIndex'),
+      side(data.side, 'side'),
+      intOrNull(data.value, 'value'),
+    ),
+  );
+};
+
+export const updateScore: RequestHandler = (request, response) => {
+  const data = body(request);
+  response.json(
+    service.updateScore(
+      id(request),
+      intParam(request, 'groupIndex'),
+      intParam(request, 'matchIndex'),
+      side(data.side, 'side'),
+      intOrNull(data.value, 'value'),
+    ),
+  );
+};
+
+export const updateKnockoutScore: RequestHandler = (request, response) => {
+  const data = body(request);
+  response.json(
+    service.updateKnockoutScore(
+      id(request),
+      intParam(request, 'round'),
+      intParam(request, 'matchIndex'),
       side(data.side, 'side'),
       intOrNull(data.value, 'value'),
     ),

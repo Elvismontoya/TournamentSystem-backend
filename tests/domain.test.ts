@@ -12,6 +12,7 @@ import {
   matchKey,
   pairingsFor,
   replaceGroupPlayers,
+  setNotation,
   setWinner,
   summarizeMatch,
   type Group,
@@ -194,6 +195,7 @@ describe('sets y partidos', () => {
   it('setWinner con otras reglas: sets a 21 y diferencia de 1', () => {
     const rules = {
       setsPerMatch: 3,
+      scoring: 'points' as const,
       gamePoints: 21,
       winMargin: 1,
       points: { win: 2, loss: 1, walkover: 0 },
@@ -221,6 +223,41 @@ describe('sets y partidos', () => {
     assert.equal(summary.winner, 0);
     assert.deepEqual(summary.sets, [3, 0]);
     assert.deepEqual(summary.points, [33, 0]);
+  });
+
+  describe('solo con el marcador final en sets', () => {
+    const bySets = { ...DEFAULT_RULES, scoring: 'sets' as const };
+
+    it('un 3-1 termina el partido; un marcador imposible no', () => {
+      const won = summarizeMatch({ sets: [], score: [1, 3] }, bySets);
+      assert.equal(won.finished, true);
+      assert.equal(won.winner, 1);
+      assert.deepEqual(won.sets, [1, 3]);
+      assert.deepEqual(won.points, [0, 0]);
+      // Best of 5: nobody reached 3, or both did.
+      assert.equal(summarizeMatch({ sets: [], score: [2, 1] }, bySets).finished, false);
+      assert.equal(summarizeMatch({ sets: [], score: [3, 3] }, bySets).finished, false);
+      assert.equal(summarizeMatch({ sets: [], score: [3, null] }, bySets).started, true);
+    });
+
+    it('la notación es el marcador desde cada lado', () => {
+      const result = { sets: [], score: [3, 1] as [number, number] };
+      assert.equal(setNotation(result, 0, bySets), '3-1');
+      assert.equal(setNotation(result, 1, bySets), '1-3');
+    });
+
+    it('en el desempate no se usa el cociente de puntos (regla 4)', () => {
+      // Triple tie where only points could have separated them: unresolved (draw).
+      const group: Group = { name: '1', players: [player(1), player(2), player(3)] };
+      // Order of a group of 3: 1-3, 1-2, 2-3. Each wins one 3-1.
+      const results: Results = {
+        [matchKey(0, 0)]: { sets: [], score: [1, 3] },
+        [matchKey(0, 1)]: { sets: [], score: [3, 1] },
+        [matchKey(0, 2)]: { sets: [], score: [3, 1] },
+      };
+      const { ties } = computeGroupTable(group, 0, results, bySets);
+      assert.equal(ties[0]?.decidedBy, 'unresolved');
+    });
   });
 });
 

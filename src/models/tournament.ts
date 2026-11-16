@@ -8,23 +8,25 @@ import type { Player } from '../domain/players.ts';
 
 /** Everything the organizer edits in Configuración (except the name). */
 export interface TournamentSettings {
-  /* General: shown on the tournament page. */
+  /* General: shown on the tournament page. Sport, format, modalities and categories are
+     names from catalogs that will live in their own tables (Deporte, Formato, Modalidad,
+     Categoría). */
   sport: string;
-  category: string;
-  /** ISO dates (YYYY-MM-DD), or null if not set. */
+  format: string;
+  /** "Individual", "Dobles"… (at least one). */
+  modalities: string[];
+  /** "Sub 11", "Sub 13", "Mayores"… (at least one). */
+  categories: string[];
+  /** ISO date (YYYY-MM-DD). */
   startDate: string | null;
   endDate: string | null;
   location: string;
 
   /* Format */
-  participantType: string;
-  format: string;
-  /** Places ("cupos"). */
-  capacity: number;
   /** Group size suggested when drawing the groups. */
   defaultGroupSize: number;
-  /** Players per group that advance to the knockout stage (the bracket supports 2). */
-  qualifiersPerGroup: number;
+  /** Players per group that advance to the knockout stage: 1 or 2. */
+  qualifiersPerGroup: 1 | 2;
   /** When true, the top of the ranking heads the groups in the draw. */
   seeded: boolean;
 

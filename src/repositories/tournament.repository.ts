@@ -29,6 +29,11 @@ export function findTournament(id: string): Tournament | undefined {
   return tournaments.get(id);
 }
 
+/** Every tournament, in creation order. */
+export function listTournaments(): Tournament[] {
+  return [...tournaments.values()];
+}
+
 export function saveTournament(tournament: Tournament): void {
   tournaments.set(tournament.id, tournament);
 }

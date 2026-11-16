@@ -222,13 +222,12 @@ describe('Configuración del torneo', () => {
   const settings = {
     name: 'Open Nacional 2026 (editado)',
     sport: 'Tenis de mesa',
-    category: 'Individual mixto',
+    format: 'Grupos + eliminación',
+    modalities: ['Individual'],
+    categories: ['Sub 13', 'Mayores'],
     startDate: '2026-11-20',
     endDate: '2026-11-21',
     location: 'Coliseo Norte',
-    participantType: 'Individual',
-    format: 'Grupos + eliminación',
-    capacity: 40,
     defaultGroupSize: 4,
     seeded: true,
     setsPerMatch: 3,
@@ -242,16 +241,18 @@ describe('Configuración del torneo', () => {
 
   interface SettingsResponse extends View {
     name: string;
-    settings: { setsPerMatch: number; setsToWin: number; capacity: number; rulesLocked: boolean };
+    settings: { setsPerMatch: number; setsToWin: number; rulesLocked: boolean };
   }
 
   it('rechaza valores inválidos', async () => {
+    const noCategory = await call('PUT', '/configuracion', { ...settings, categories: [] });
+    assert.equal(noCategory.status, 400);
+    const noStart = await call('PUT', '/configuracion', { ...settings, startDate: null });
+    assert.equal(noStart.status, 400);
     const points = await call('PUT', '/configuracion', { ...settings, pointsWin: 1 });
     assert.equal(points.status, 400);
     const dates = await call('PUT', '/configuracion', { ...settings, endDate: '2026-11-01' });
     assert.equal(dates.status, 400);
-    const capacity = await call('PUT', '/configuracion', { ...settings, capacity: 5 });
-    assert.equal(capacity.status, 409);
     const sets = await call('PUT', '/configuracion', { ...settings, setsPerMatch: 4 });
     assert.equal(sets.status, 400);
   });
@@ -441,6 +442,94 @@ describe('Llaves: resultados y avance', () => {
       view.ranking?.slice(0, 5).map((entry) => entry.position),
       [1, 2, 3, 3, 5],
     );
+  });
+});
+
+describe('Crear torneo', () => {
+  const root = () => base.replace(/\/open-nacional-2026$/, '');
+  async function request(method: string, path: string, data?: unknown) {
+    const response = await fetch(`${root()}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      ...(data === undefined ? {} : { body: JSON.stringify(data) }),
+    });
+    return { status: response.status, data: (await response.json()) as Record<string, unknown> };
+  }
+  const wizard = {
+    name: 'Copa Sub 13 Ñandú',
+    sport: 'Tenis de mesa',
+    format: 'Grupos + eliminación',
+    modalities: ['Individual'],
+    categories: ['Sub 11', 'Sub 13'],
+    startDate: '2026-12-05',
+    endDate: null,
+    location: '',
+    defaultGroupSize: 3,
+    qualifiersPerGroup: 1,
+    seeded: false,
+    scoring: 'sets',
+    setsPerMatch: 5,
+    gamePoints: 11,
+    winMargin: 2,
+    knockoutSetsPerMatch: 5,
+    thirdPlaceMatch: true,
+    pointsWin: 2,
+    pointsLoss: 1,
+    pointsWalkover: 0,
+  };
+
+  it('valida los obligatorios y crea el torneo con toda su configuración', async () => {
+    assert.equal((await request('POST', '', { ...wizard, modalities: [] })).status, 400);
+    assert.equal((await request('POST', '', { ...wizard, name: ' ' })).status, 400);
+
+    const created = await request('POST', '', wizard);
+    assert.equal(created.status, 201);
+    const view = created.data as {
+      id: string;
+      players: unknown[];
+      settings: { categories: string[]; scoring: string; qualifiersPerGroup: number };
+    };
+    assert.equal(view.id, 'copa-sub-13-nandu');
+    assert.deepEqual(view.players, []);
+    assert.deepEqual(view.settings.categories, ['Sub 11', 'Sub 13']);
+    assert.equal(view.settings.scoring, 'sets');
+    assert.equal(view.settings.qualifiersPerGroup, 1);
+
+    // Same name again: a different id.
+    const again = await request('POST', '', wizard);
+    assert.equal((again.data as { id: string }).id, 'copa-sub-13-nandu-2');
+
+    const list = await request('GET', '');
+    const ids = (list.data as unknown as { id: string; registered: number }[]).map(
+      (entry) => entry.id,
+    );
+    assert.ok(ids.includes('copa-sub-13-nandu'));
+  });
+
+  it('con «solo sets» se carga el marcador final y no los puntos de cada set', async () => {
+    const id = '/copa-sub-13-nandu';
+    for (const name of ['Ana', 'Bea', 'Caro']) {
+      await request('POST', `${id}/participantes`, { name, delegation: '', ranking: null });
+    }
+    await request('POST', `${id}/grupos/sorteo`, { groupSize: 3 });
+    const bySet = await request('PUT', `${id}/grupos/0/partidos/0/sets/0`, { side: 0, value: 11 });
+    assert.equal(bySet.status, 409);
+    const tooMany = await request('PUT', `${id}/grupos/0/partidos/0/marcador`, {
+      side: 0,
+      value: 4,
+    });
+    assert.equal(tooMany.status, 400);
+    await request('PUT', `${id}/grupos/0/partidos/0/marcador`, { side: 0, value: 3 });
+    const { data } = await request('PUT', `${id}/grupos/0/partidos/0/marcador`, {
+      side: 1,
+      value: 1,
+    });
+    const match = (
+      data as { groupStage: { groups: { matches: { summary: { finished: boolean } }[] }[] } }
+    ).groupStage.groups
+      .at(0)
+      ?.matches.at(0);
+    assert.equal(match?.summary.finished, true);
   });
 });
 
