@@ -31,7 +31,14 @@ import {
   type Player,
 } from '../domain/players.ts';
 import { HttpError } from '../httpError.ts';
-import type { Tournament, TournamentSettings } from '../models/tournament.ts';
+import {
+  allScopes,
+  commitScope,
+  scopeOf,
+  type CategoryScope,
+  type Tournament,
+  type TournamentSettings,
+} from '../models/tournament.ts';
 import {
   deleteTournament as removeTournament,
   findTournament,
@@ -61,21 +68,43 @@ function save(tournament: Tournament): TournamentView {
   return tournamentView(tournament);
 }
 
-function hasResults(tournament: Tournament): boolean {
-  return anyResults(tournament.results);
+/** A category's competition, to change it (written back with saveScope). */
+function loadScope(
+  tournamentId: string,
+  category: string,
+): { tournament: Tournament; scope: CategoryScope } {
+  const tournament = load(tournamentId);
+  if (!tournament.settings.categories.includes(category)) {
+    throw new HttpError(404, `El torneo no tiene la categoría «${category}».`);
+  }
+  return { tournament, scope: scopeOf(tournament, category) };
 }
 
-function knockoutStarted(tournament: Tournament): boolean {
-  return anyResults(tournament.knockoutResults);
+function saveScope(tournament: Tournament, scope: CategoryScope): TournamentView {
+  commitScope(tournament, scope);
+  return save(tournament);
 }
 
-function thirdPlaceStarted(tournament: Tournament): boolean {
-  return knockoutRoundsOf(tournament)?.thirdPlace?.summary.started ?? false;
+function hasResults(scope: CategoryScope): boolean {
+  return anyResults(scope.results);
+}
+
+function knockoutStarted(scope: CategoryScope): boolean {
+  return anyResults(scope.knockoutResults);
+}
+
+function thirdPlaceStarted(scope: CategoryScope): boolean {
+  return knockoutRoundsOf(scope)?.thirdPlace?.summary.started ?? false;
+}
+
+/** Results entered in any category (rules are shared by every category). */
+function anyCategory(tournament: Tournament, test: (scope: CategoryScope) => boolean): boolean {
+  return allScopes(tournament).some(test);
 }
 
 /** Once the bracket has results, the groups (who qualified) must stay as they are. */
-function requireGroupStageOpen(tournament: Tournament): void {
-  if (knockoutStarted(tournament)) {
+function requireGroupStageOpen(scope: CategoryScope): void {
+  if (knockoutStarted(scope)) {
     throw new HttpError(
       409,
       'Las llaves ya tienen resultados: los grupos y sus resultados no se pueden cambiar.',
@@ -83,11 +112,10 @@ function requireGroupStageOpen(tournament: Tournament): void {
   }
 }
 
-function requireGroups(tournament: Tournament) {
-  if (!tournament.groups) throw new HttpError(409, 'Primero sortea los grupos.');
-  return tournament.groups;
+function requireGroups(scope: CategoryScope) {
+  if (!scope.groups) throw new HttpError(409, 'Primero sortea los grupos.');
+  return scope.groups;
 }
-
 export function getTournament(tournamentId: string): TournamentView {
   return tournamentView(load(tournamentId));
 }
@@ -214,7 +242,10 @@ function checkedSettings(
   if (qualifiersPerGroup !== 1 && qualifiersPerGroup !== 2) {
     throw new HttpError(400, 'Clasifican 1 o 2 jugadores por grupo.');
   }
-  if (qualifiersPerGroup !== current.qualifiersPerGroup && knockoutStarted(tournament)) {
+  if (
+    qualifiersPerGroup !== current.qualifiersPerGroup &&
+    anyCategory(tournament, knockoutStarted)
+  ) {
     throw new HttpError(
       409,
       'Las llaves ya tienen resultados: los clasificados por grupo no se pueden cambiar.',
@@ -249,13 +280,19 @@ function checkedSettings(
     scoring !== rules.scoring ||
     gamePoints !== rules.gamePoints ||
     winMargin !== rules.winMargin;
-  if (rulesChanged && (hasResults(tournament) || knockoutStarted(tournament))) {
+  if (
+    rulesChanged &&
+    anyCategory(tournament, (scope) => hasResults(scope) || knockoutStarted(scope))
+  ) {
     throw new HttpError(
       409,
       'Ya hay resultados cargados: los sets por partido, la forma de cargar resultados, los puntos por set y la diferencia mínima no se pueden cambiar.',
     );
   }
-  if (knockoutSetsPerMatch !== current.knockoutSetsPerMatch && knockoutStarted(tournament)) {
+  if (
+    knockoutSetsPerMatch !== current.knockoutSetsPerMatch &&
+    anyCategory(tournament, knockoutStarted)
+  ) {
     throw new HttpError(
       409,
       'Las llaves ya tienen resultados: los sets por partido de las llaves no se pueden cambiar.',
@@ -263,11 +300,23 @@ function checkedSettings(
   }
 
   const thirdPlaceMatch = update.thirdPlaceMatch ?? current.thirdPlaceMatch;
-  if (thirdPlaceMatch !== current.thirdPlaceMatch && thirdPlaceStarted(tournament)) {
+  if (thirdPlaceMatch !== current.thirdPlaceMatch && anyCategory(tournament, thirdPlaceStarted)) {
     throw new HttpError(
       409,
       'El partido por el 3.er puesto ya tiene resultados: bórralos para quitarlo.',
     );
+  }
+
+  // A category can only be removed while it has no players and nothing drawn.
+  const categories = names(update.categories, 'categoría');
+  for (const removed of current.categories.filter((name) => !categories.includes(name))) {
+    const scope = scopeOf(tournament, removed);
+    if (scope.players.length > 0 || scope.groups) {
+      throw new HttpError(
+        409,
+        `La categoría «${removed}» tiene jugadores o grupos: elimínalos o pásalos a otra categoría antes de quitarla.`,
+      );
+    }
   }
 
   return {
@@ -276,7 +325,7 @@ function checkedSettings(
       sport: text(update.sport, 'el deporte', true),
       format: text(update.format, 'el formato', true),
       modalities: names(update.modalities, 'modalidad'),
-      categories: names(update.categories, 'categoría'),
+      categories,
       startDate,
       endDate,
       location: text(update.location, 'El lugar'),
@@ -304,34 +353,42 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
   tournament.name = name;
   tournament.settings = settings;
 
-  // No results yet: empty scoresheets must match the (possibly new) rules.
-  const rules = settings.groupRules;
-  if (
-    rules.setsPerMatch !== previous.groupRules.setsPerMatch ||
-    rules.scoring !== previous.groupRules.scoring
-  ) {
-    tournament.results = {};
-    tournament.knockoutResults = {};
-  }
-  if (settings.knockoutSetsPerMatch !== previous.knockoutSetsPerMatch) {
-    tournament.knockoutResults = {};
-  }
-  // The bracket is drawn for a number of qualifiers: a new number needs a new draw.
-  if (settings.qualifiersPerGroup !== previous.qualifiersPerGroup) {
-    tournament.knockout = null;
-    tournament.knockoutResults = {};
-  }
-  // Turned off with nothing entered: drop its (empty) scoresheet, if any.
-  const rounds = tournament.knockout ? Math.log2(tournament.knockout.size) : 0;
-  if (!settings.thirdPlaceMatch && rounds >= 2) {
-    const key = knockoutMatchKey(rounds - 1, 1);
-    tournament.knockoutResults = Object.fromEntries(
-      Object.entries(tournament.knockoutResults).filter(([candidate]) => candidate !== key),
-    );
+  // Categories taken out (with nothing in them) lose their (empty) competition.
+  tournament.stages = Object.fromEntries(
+    Object.entries(tournament.stages).filter(([category]) =>
+      settings.categories.includes(category),
+    ),
+  );
+  for (const scope of allScopes(tournament)) {
+    // No results yet: empty scoresheets must match the (possibly new) rules.
+    const rules = settings.groupRules;
+    if (
+      rules.setsPerMatch !== previous.groupRules.setsPerMatch ||
+      rules.scoring !== previous.groupRules.scoring
+    ) {
+      scope.results = {};
+      scope.knockoutResults = {};
+    }
+    if (settings.knockoutSetsPerMatch !== previous.knockoutSetsPerMatch) {
+      scope.knockoutResults = {};
+    }
+    // The bracket is drawn for a number of qualifiers: a new number needs a new draw.
+    if (settings.qualifiersPerGroup !== previous.qualifiersPerGroup) {
+      scope.knockout = null;
+      scope.knockoutResults = {};
+    }
+    // Turned off with nothing entered: drop its (empty) scoresheet, if any.
+    const rounds = scope.knockout ? Math.log2(scope.knockout.size) : 0;
+    if (!settings.thirdPlaceMatch && rounds >= 2) {
+      const key = knockoutMatchKey(rounds - 1, 1);
+      scope.knockoutResults = Object.fromEntries(
+        Object.entries(scope.knockoutResults).filter(([candidate]) => candidate !== key),
+      );
+    }
+    if (tournament.stages[scope.category]) commitScope(tournament, scope);
   }
   return save(tournament);
 }
-
 /** URL-friendly id from the name ("Open Nacional 2026" → "open-nacional-2026"), unique. */
 function newTournamentId(name: string): string {
   const base =
@@ -354,10 +411,7 @@ export function createTournament(input: SettingsUpdate): TournamentView {
     name: '',
     settings: structuredClone(NEW_TOURNAMENT_SETTINGS),
     players: [],
-    groups: null,
-    results: {},
-    knockout: null,
-    knockoutResults: {},
+    stages: {},
   };
   const { name, settings } = checkedSettings(draft, input);
   return save({ ...draft, id: newTournamentId(name), name, settings });
@@ -411,6 +465,24 @@ function validateNewPlayer(entry: NewPlayer, players: Player[]): void {
   }
 }
 
+/**
+ * The tournament category a player goes to: the one given (it must be the tournament's), or
+ * the only one when the tournament has a single category.
+ */
+function categoryFor(tournament: Tournament, given: string | null | undefined): string {
+  const { categories } = tournament.settings;
+  const name = given?.trim() ?? '';
+  if (name === '') {
+    const only = categories.at(0);
+    if (categories.length === 1 && only !== undefined) return only;
+    throw new HttpError(400, 'Elige la categoría del jugador.');
+  }
+  if (!categories.includes(name)) {
+    throw new HttpError(400, `La categoría «${name}» no es de este torneo.`);
+  }
+  return name;
+}
+
 /** Registers players: there is no limit of places ("cupos"). */
 function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
   const assigned: number[] = [];
@@ -424,7 +496,7 @@ function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
       delegation: entry.delegation.trim(),
       ranking: entry.ranking,
       gender: entry.gender ?? null,
-      category: entry.category?.trim() || null,
+      category: categoryFor(tournament, entry.category),
       modalities: entry.modalities ?? { ...INDIVIDUAL_ONLY },
     };
   });
@@ -432,6 +504,7 @@ function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
   tournament.players = sortByRanking([...tournament.players, ...added]);
   return added;
 }
+
 export function addPlayer(
   tournamentId: string,
   entry: NewPlayer,
@@ -448,9 +521,18 @@ function requirePlayer(tournament: Tournament, playerId: string): Player {
   return player;
 }
 
+/** The group a player is in, in their category's draw (or null). */
+function groupOf(tournament: Tournament, player: Player): string | null {
+  if (player.category === null) return null;
+  const { groups } = scopeOf(tournament, player.category);
+  const place = groups ? locatePlayer(groups, player) : null;
+  return groups && place ? (groups[place.groupIndex]?.name ?? null) : null;
+}
+
 /**
  * Edits a registered player. Groups hold the same Player objects, so the change shows
  * everywhere; results don't depend on name, Nr. or ranking, so nothing else changes.
+ * The category can only change while the player is in no group.
  */
 export function updatePlayer(
   tournamentId: string,
@@ -463,14 +545,25 @@ export function updatePlayer(
     entry,
     tournament.players.filter((candidate) => candidate !== player),
   );
-  // Gender and category only change when sent; modalities (pairs, team) stay as imported.
+  let category = player.category;
+  if (entry.category !== undefined) {
+    category = categoryFor(tournament, entry.category);
+    const group = groupOf(tournament, player);
+    if (category !== player.category && group !== null) {
+      throw new HttpError(
+        409,
+        `${player.name} está en el Grupo ${group} de ${player.category ?? ''}: sácalo del grupo antes de cambiarle la categoría.`,
+      );
+    }
+  }
+  // Gender only changes when sent; modalities stay as imported.
   Object.assign(player, {
     name: entry.name.trim(),
     delegation: entry.delegation.trim(),
     ranking: entry.ranking,
     bib: entry.bib,
+    category,
     ...(entry.gender === undefined ? {} : { gender: entry.gender }),
-    ...(entry.category === undefined ? {} : { category: entry.category?.trim() || null }),
   });
   tournament.players = sortByRanking(tournament.players);
   return save(tournament);
@@ -483,12 +576,11 @@ export function updatePlayer(
 export function removePlayer(tournamentId: string, playerId: string): TournamentView {
   const tournament = load(tournamentId);
   const player = requirePlayer(tournament, playerId);
-  const place = tournament.groups ? locatePlayer(tournament.groups, player) : null;
-  if (tournament.groups && place) {
-    const group = tournament.groups[place.groupIndex];
+  const group = groupOf(tournament, player);
+  if (group !== null) {
     throw new HttpError(
       409,
-      `${player.name} está en el Grupo ${group.name}: sácalo del grupo (Grupos → Editar) o vuelve a sortear antes de eliminarlo.`,
+      `${player.name} está en el Grupo ${group}: sácalo del grupo (Grupos → Editar) o vuelve a sortear antes de eliminarlo.`,
     );
   }
   tournament.players = tournament.players.filter((candidate) => candidate !== player);
@@ -496,59 +588,122 @@ export function removePlayer(tournamentId: string, playerId: string): Tournament
 }
 
 /**
- * Removes every registered player. Not allowed once results are entered; before that, the
- * group draw and the bracket (if any) are removed too, since they no longer have players.
+ * Removes every registered player. Not allowed once results are entered in any category;
+ * before that, every draw and bracket is removed too, since they no longer have players.
  */
 export function removeAllPlayers(tournamentId: string): TournamentView {
   const tournament = load(tournamentId);
-  if (hasResults(tournament) || knockoutStarted(tournament)) {
+  if (anyCategory(tournament, (scope) => hasResults(scope) || knockoutStarted(scope))) {
     throw new HttpError(
       409,
       'Ya hay resultados cargados: no se puede eliminar a todos los jugadores.',
     );
   }
   tournament.players = [];
-  tournament.groups = null;
-  tournament.results = {};
-  tournament.knockout = null;
-  tournament.knockoutResults = {};
+  tournament.stages = {};
   return save(tournament);
 }
 
+/** Where each category of the file goes: a tournament category, or null (not imported). */
+export type CategoryMap = Partial<Record<string, string | null>>;
+
+/** A category found in the file and where its players go. */
+export interface FileCategory {
+  /** As written in the file ("" when the cell is empty). */
+  name: string;
+  count: number;
+  /** Tournament category its players go to; null = not imported (or not assigned yet). */
+  target: string | null;
+  /** False while it isn't assigned (the import can't go on). */
+  assigned: boolean;
+}
+
+export interface ImportPreview {
+  players: NewPlayer[];
+  errors: string[];
+  /** Rows without an X in IND. */
+  skipped: number;
+  /** Players of file categories marked "no importar". */
+  skippedByCategory: number;
+  fileCategories: FileCategory[];
+}
+
 /**
- * How a spreadsheet would be imported, without importing: the individual players read,
- * every problem (rows that can't be read, a number already taken…) and how many rows were
- * skipped (they don't play individual).
+ * How a spreadsheet would be imported, without importing: the individual players read, the
+ * file's categories and where each goes (`categoryMap`; a category with the same name as one
+ * of the tournament goes there by itself), every problem (rows that can't be read, a number
+ * already taken, a category not assigned…) and how many rows are skipped.
  */
 export function previewImport(
   tournamentId: string,
   rows: string[][],
-): { players: NewPlayer[]; errors: string[]; skipped: number } {
+  categoryMap: CategoryMap = {},
+): ImportPreview {
   const tournament = load(tournamentId);
-  const { players, errors, skipped } = readPlayerRows(rows);
-  for (const player of players) {
+  const { categories } = tournament.settings;
+  const read = readPlayerRows(rows);
+  const errors = [...read.errors];
+
+  const counts = new Map<string, number>();
+  for (const player of read.players) {
+    const name = player.category ?? '';
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const fileCategories = [...counts].map(([name, count]): FileCategory => {
+    if (Object.hasOwn(categoryMap, name)) {
+      const target = categoryMap[name] ?? null;
+      if (target !== null && !categories.includes(target)) {
+        throw new HttpError(400, `La categoría «${target}» no es de este torneo.`);
+      }
+      return { name, count, target, assigned: true };
+    }
+    // Same name as a tournament category, or no category with a single-category tournament.
+    const only = categories.at(0);
+    if (categories.includes(name)) return { name, count, target: name, assigned: true };
+    if (name === '' && categories.length === 1 && only !== undefined) {
+      return { name, count, target: only, assigned: true };
+    }
+    return { name, count, target: null, assigned: false };
+  });
+  for (const category of fileCategories.filter((entry) => !entry.assigned)) {
+    errors.push(
+      `Elige a qué categoría del torneo van los de «${category.name || 'Sin categoría'}» (o «No importar»).`,
+    );
+  }
+
+  const targetOf = (name: string) =>
+    fileCategories.find((category) => category.name === name)?.target ?? null;
+  const players: NewPlayer[] = [];
+  let skippedByCategory = 0;
+  for (const player of read.players) {
+    const target = targetOf(player.category ?? '');
+    if (target === null) {
+      skippedByCategory++;
+      continue;
+    }
+    players.push({ ...player, category: target });
     const owner = tournament.players.find((candidate) => candidate.bib === player.bib);
     if (owner) {
       errors.push(`${player.name}: el número ${String(player.bib)} ya es de ${owner.name}.`);
     }
   }
-  return { players, errors, skipped };
+  return { players, errors, skipped: read.skipped, skippedByCategory, fileCategories };
 }
 
 export function importPlayers(
   tournamentId: string,
   rows: string[][],
+  categoryMap: CategoryMap = {},
 ): { view: TournamentView; added: Player[] } {
   const tournament = load(tournamentId);
-  const { players, errors } = previewImport(tournamentId, rows);
+  const { players, errors } = previewImport(tournamentId, rows, categoryMap);
   if (errors.length > 0) {
-    throw new HttpError(400, 'Hay filas con problemas: corrígelas en el archivo.', errors);
+    throw new HttpError(400, 'Hay problemas por resolver antes de importar.', errors);
   }
-  if (players.length === 0) throw new HttpError(400, 'La lista está vacía.');
+  if (players.length === 0) throw new HttpError(400, 'No hay jugadores para importar.');
   const added = register(tournament, players);
   return { view: save(tournament), added };
 }
-
 /* ---------- Group stage ---------- */
 
 function validateGroupSize(groupSize: number): void {
@@ -560,14 +715,22 @@ function validateGroupSize(groupSize: number): void {
   }
 }
 
-export function previewGroupDraw(tournamentId: string, groupSize: number): DrawPreview {
+export function previewGroupDraw(
+  tournamentId: string,
+  category: string,
+  groupSize: number,
+): DrawPreview {
   validateGroupSize(groupSize);
-  const tournament = load(tournamentId);
+  const { scope: tournament } = loadScope(tournamentId, category);
   return drawPreview(individualPlayers(tournament.players), groupSize, tournament.settings.seeded);
 }
 
-export function drawTournamentGroups(tournamentId: string, groupSize: number): TournamentView {
-  const tournament = load(tournamentId);
+export function drawTournamentGroups(
+  tournamentId: string,
+  category: string,
+  groupSize: number,
+): TournamentView {
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   validateGroupSize(groupSize);
   requireGroupStageOpen(tournament);
   // Only the individual event is drawn for now.
@@ -590,15 +753,16 @@ export function drawTournamentGroups(tournamentId: string, groupSize: number): T
   tournament.results = {};
   tournament.knockout = null; // a new group draw invalidates the bracket draw
   tournament.knockoutResults = {};
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 export function setGroupPlayers(
   tournamentId: string,
+  category: string,
   groupIndex: number,
   playerIds: string[],
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const groups = requireGroups(tournament);
   requireGroupStageOpen(tournament);
   if (!Number.isInteger(groupIndex) || groupIndex < 0 || groupIndex >= groups.length) {
@@ -615,7 +779,7 @@ export function setGroupPlayers(
   }
   const players = playerIds.map((id) => {
     const player = tournament.players.find((candidate) => candidate.id === id);
-    if (!player) throw new HttpError(400, 'Hay un jugador que no está inscrito.');
+    if (!player) throw new HttpError(400, 'Hay un jugador que no está inscrito en esta categoría.');
     if (!player.modalities.individual) {
       throw new HttpError(400, `${player.name} no juega individual: no puede estar en un grupo.`);
     }
@@ -630,10 +794,10 @@ export function setGroupPlayers(
       ([key]) => !touched.some((index) => key.startsWith(`${String(index)}-`)),
     ),
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
-function requireMatch(tournament: Tournament, groupIndex: number, matchIndex: number): string {
+function requireMatch(tournament: CategoryScope, groupIndex: number, matchIndex: number): string {
   const groups = requireGroups(tournament);
   requireGroupStageOpen(tournament);
   const group = Number.isInteger(groupIndex) ? groups[groupIndex] : undefined;
@@ -650,13 +814,14 @@ function requireMatch(tournament: Tournament, groupIndex: number, matchIndex: nu
 
 export function updateSet(
   tournamentId: string,
+  category: string,
   groupIndex: number,
   matchIndex: number,
   setIndex: number,
   side: 0 | 1,
   value: number | null,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const key = requireMatch(tournament, groupIndex, matchIndex);
   tournament.results = withSet(
     tournament.results,
@@ -666,18 +831,19 @@ export function updateSet(
     side,
     value,
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 /** Final score of a group match in sets ("3-1"), when the tournament is scored by sets. */
 export function updateScore(
   tournamentId: string,
+  category: string,
   groupIndex: number,
   matchIndex: number,
   side: 0 | 1,
   value: number | null,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const key = requireMatch(tournament, groupIndex, matchIndex);
   tournament.results = withScore(
     tournament.results,
@@ -686,7 +852,7 @@ export function updateScore(
     side,
     value,
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 /** Results with one set score changed (shared by group and knockout matches). */
@@ -772,11 +938,12 @@ function withWalkover(
 /** Marks who didn't show up (the other wins by W.O.); null undoes it. */
 export function setWalkover(
   tournamentId: string,
+  category: string,
   groupIndex: number,
   matchIndex: number,
   absent: 0 | 1 | null,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const key = requireMatch(tournament, groupIndex, matchIndex);
   // A walkover replaces any sets entered; undoing it starts from an empty scoresheet.
   tournament.results = withWalkover(
@@ -785,12 +952,12 @@ export function setWalkover(
     tournament.settings.groupRules.setsPerMatch,
     absent,
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 /* ---------- Knockout ---------- */
 
-function requireKnockoutNotStarted(tournament: Tournament): void {
+function requireKnockoutNotStarted(tournament: CategoryScope): void {
   if (knockoutStarted(tournament)) {
     throw new HttpError(
       409,
@@ -799,8 +966,8 @@ function requireKnockoutNotStarted(tournament: Tournament): void {
   }
 }
 
-export function drawTournamentKnockout(tournamentId: string): TournamentView {
-  const tournament = load(tournamentId);
+export function drawTournamentKnockout(tournamentId: string, category: string): TournamentView {
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const groups = requireGroups(tournament);
   requireKnockoutNotStarted(tournament);
   // Qualifiers already known are kept apart from their delegation in the first round.
@@ -811,15 +978,16 @@ export function drawTournamentKnockout(tournamentId: string): TournamentView {
     tournament.settings.qualifiersPerGroup,
   );
   tournament.knockoutResults = {};
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 export function moveKnockoutSlot(
   tournamentId: string,
+  category: string,
   position: number,
   slot: BracketSlot,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const groups = requireGroups(tournament);
   const { knockout } = tournament;
   if (!knockout) throw new HttpError(409, 'Primero sortea o arma las llaves.');
@@ -842,14 +1010,14 @@ export function moveKnockoutSlot(
     throw new HttpError(400, 'Este cuadro no tiene byes.');
   }
   tournament.knockout = moveSlot(knockout, position, slot);
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 /**
  * Checks a knockout match can take results: it exists, both players are known, and its
  * winner hasn't played the next match yet (changing it would change who is there).
  */
-function requireKnockoutMatch(tournament: Tournament, round: number, index: number): string {
+function requireKnockoutMatch(tournament: CategoryScope, round: number, index: number): string {
   const played = knockoutRoundsOf(tournament);
   if (!tournament.knockout || !played) {
     throw new HttpError(409, 'Primero sortea o arma las llaves.');
@@ -879,13 +1047,14 @@ function requireKnockoutMatch(tournament: Tournament, round: number, index: numb
 
 export function updateKnockoutSet(
   tournamentId: string,
+  category: string,
   round: number,
   index: number,
   setIndex: number,
   side: 0 | 1,
   value: number | null,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const key = requireKnockoutMatch(tournament, round, index);
   tournament.knockoutResults = withSet(
     tournament.knockoutResults,
@@ -895,17 +1064,18 @@ export function updateKnockoutSet(
     side,
     value,
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 export function updateKnockoutScore(
   tournamentId: string,
+  category: string,
   round: number,
   index: number,
   side: 0 | 1,
   value: number | null,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const key = requireKnockoutMatch(tournament, round, index);
   tournament.knockoutResults = withScore(
     tournament.knockoutResults,
@@ -914,16 +1084,17 @@ export function updateKnockoutScore(
     side,
     value,
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }
 
 export function setKnockoutWalkover(
   tournamentId: string,
+  category: string,
   round: number,
   index: number,
   absent: 0 | 1 | null,
 ): TournamentView {
-  const tournament = load(tournamentId);
+  const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const key = requireKnockoutMatch(tournament, round, index);
   tournament.knockoutResults = withWalkover(
     tournament.knockoutResults,
@@ -931,5 +1102,5 @@ export function setKnockoutWalkover(
     knockoutRulesOf(tournament).setsPerMatch,
     absent,
   );
-  return save(tournament);
+  return saveScope(owner, tournament);
 }

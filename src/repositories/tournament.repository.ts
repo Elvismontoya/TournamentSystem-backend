@@ -17,10 +17,7 @@ function seed(): void {
     ...EXAMPLE_TOURNAMENT,
     settings: structuredClone(EXAMPLE_SETTINGS),
     players: sortByRanking(EXAMPLE_PLAYERS.map((player) => ({ ...player }))),
-    groups: null,
-    results: {},
-    knockout: null,
-    knockoutResults: {},
+    stages: {},
   });
 }
 seed();

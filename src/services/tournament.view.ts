@@ -41,7 +41,7 @@ import {
 } from '../domain/knockout.ts';
 import { individualPlayers, nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
 import { finalRanking, knockoutFinished, type RankingEntry } from '../domain/ranking.ts';
-import type { Tournament } from '../models/tournament.ts';
+import { allScopes, type CategoryScope, type Tournament } from '../models/tournament.ts';
 
 /** Tournament settings plus limits, flattened for the frontend (Configuración and the rest). */
 export interface SettingsView {
@@ -153,20 +153,30 @@ export interface GroupStageView {
   knockoutSize: number;
 }
 
-export interface TournamentView {
-  id: string;
+/** The competition of one category: its draw, matches, bracket and final ranking. */
+export interface CategoryView {
+  /** Category name ("Sub 13"…), as in the settings. */
   name: string;
-  settings: SettingsView;
-  /** Registered players, highest ranking first. */
-  players: Player[];
-  /** Nr. a new player gets if none is given. */
-  nextBib: number;
+  /** Players registered in this category. */
+  registered: number;
   /** Seeded players (top of the ranking, one per group), in seed order. */
   seedIds: string[];
   groupStage: GroupStageView | null;
   knockout: KnockoutView | null;
   /** Final ranking (every player who played), once the knockout is over; null before. */
   ranking: RankingEntry[] | null;
+}
+
+export interface TournamentView {
+  id: string;
+  name: string;
+  settings: SettingsView;
+  /** Registered players of every category, highest ranking first. */
+  players: Player[];
+  /** Nr. a new player gets if none is given (Nr. are unique in the whole tournament). */
+  nextBib: number;
+  /** One competition per category, in the order of the settings: they never mix. */
+  categories: CategoryView[];
 }
 
 export interface DrawPreview {
@@ -181,6 +191,7 @@ export interface DrawPreview {
 
 function settingsOf(tournament: Tournament): SettingsView {
   const { groupRules: rules, ...settings } = tournament.settings;
+  const scopes = allScopes(tournament);
   return {
     sport: settings.sport,
     format: settings.format,
@@ -204,20 +215,25 @@ function settingsOf(tournament: Tournament): SettingsView {
     pointsWin: rules.points.win,
     pointsLoss: rules.points.loss,
     pointsWalkover: rules.points.walkover,
-    rulesLocked: anyResults(tournament.results) || anyResults(tournament.knockoutResults),
-    knockoutRulesLocked: anyResults(tournament.knockoutResults),
-    thirdPlaceLocked: knockoutRoundsOf(tournament)?.thirdPlace?.summary.started ?? false,
+    // Rules are shared by every category: any category's results lock them.
+    rulesLocked: scopes.some(
+      (scope) => anyResults(scope.results) || anyResults(scope.knockoutResults),
+    ),
+    knockoutRulesLocked: scopes.some((scope) => anyResults(scope.knockoutResults)),
+    thirdPlaceLocked: scopes.some(
+      (scope) => knockoutRoundsOf(scope)?.thirdPlace?.summary.started ?? false,
+    ),
   };
 }
 
 /** Knockout matches use the group rules except for their own number of sets. */
-export function knockoutRulesOf(tournament: Tournament): GroupRules {
+export function knockoutRulesOf(tournament: CategoryScope): GroupRules {
   const { groupRules, knockoutSetsPerMatch } = tournament.settings;
   return { ...groupRules, setsPerMatch: knockoutSetsPerMatch };
 }
 
 /** Who holds each qualifier slot (1.º/2.º of a group) right now; null while undecided. */
-export function slotPlayerOf(tournament: Tournament): SlotPlayer {
+export function slotPlayerOf(tournament: CategoryScope): SlotPlayer {
   const { groups, results, settings } = tournament;
   const { qualifiersPerGroup, groupRules } = settings;
   const qualifiers = (groups ?? []).map((group, groupIndex) =>
@@ -227,7 +243,7 @@ export function slotPlayerOf(tournament: Tournament): SlotPlayer {
 }
 
 /** The bracket played out with the current group qualifiers; null before it is drawn. */
-export function knockoutRoundsOf(tournament: Tournament): PlayedKnockout | null {
+export function knockoutRoundsOf(tournament: CategoryScope): PlayedKnockout | null {
   const { knockout, groups, knockoutResults, settings } = tournament;
   if (!knockout || !groups) return null;
   return playKnockout(
@@ -262,7 +278,7 @@ export function knockoutMatchLocked(played: PlayedKnockout, round: number, index
   return fed.some((match) => match?.summary.started ?? false);
 }
 
-function knockoutOf(tournament: Tournament): KnockoutView | null {
+function knockoutOf(tournament: CategoryScope): KnockoutView | null {
   const { knockout } = tournament;
   const played = knockoutRoundsOf(tournament);
   if (!knockout || !played) return null;
@@ -303,7 +319,7 @@ function knockoutOf(tournament: Tournament): KnockoutView | null {
 }
 
 /** Final ranking once the knockout is over (null before). */
-function rankingOf(tournament: Tournament): RankingEntry[] | null {
+function rankingOf(tournament: CategoryScope): RankingEntry[] | null {
   const { groups, results, settings } = tournament;
   const played = knockoutRoundsOf(tournament);
   if (!groups || !played) return null;
@@ -316,7 +332,7 @@ function rankingOf(tournament: Tournament): RankingEntry[] | null {
   return finalRanking(played, placings);
 }
 
-function groupStageOf(tournament: Tournament): GroupStageView | null {
+function groupStageOf(tournament: CategoryScope): GroupStageView | null {
   const { groups, results } = tournament;
   const { qualifiersPerGroup, groupRules: rules } = tournament.settings;
   if (!groups) return null;
@@ -370,7 +386,7 @@ function groupStageOf(tournament: Tournament): GroupStageView | null {
 
 /** Seeds: before the draw, the top of the ranking for the default group size; after it,
  * the best-ranked players among those in a group, one per group. None if seeding is off. */
-function seedsOf(tournament: Tournament): Player[] {
+function seedsOf(tournament: CategoryScope): Player[] {
   const { groups, settings } = tournament;
   if (!settings.seeded) return [];
   if (!groups) {
@@ -380,6 +396,17 @@ function seedsOf(tournament: Tournament): Player[] {
   return sortByRanking(groups.flatMap((group) => group.players)).slice(0, groups.length);
 }
 
+function categoryView(scope: CategoryScope): CategoryView {
+  return {
+    name: scope.category,
+    registered: scope.players.length,
+    seedIds: seedsOf(scope).map((player) => player.id),
+    groupStage: groupStageOf(scope),
+    knockout: knockoutOf(scope),
+    ranking: rankingOf(scope),
+  };
+}
+
 export function tournamentView(tournament: Tournament): TournamentView {
   return {
     id: tournament.id,
@@ -387,10 +414,7 @@ export function tournamentView(tournament: Tournament): TournamentView {
     settings: settingsOf(tournament),
     players: tournament.players,
     nextBib: nextFreeBib(tournament.players),
-    seedIds: seedsOf(tournament).map((player) => player.id),
-    groupStage: groupStageOf(tournament),
-    knockout: knockoutOf(tournament),
-    ranking: rankingOf(tournament),
+    categories: allScopes(tournament).map(categoryView),
   };
 }
 

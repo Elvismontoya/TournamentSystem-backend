@@ -24,13 +24,35 @@ after(() => {
   close();
 });
 
+/** The example tournament's only category: groups and bracket go under it. */
+const CATEGORY = `/categorias/${encodeURIComponent('Mayores (Libre)')}`;
+
+/**
+ * Each category has its own competition (view.categories[]). These tests use the example
+ * tournament's only category: its draw, bracket and ranking are copied to the top of the view.
+ */
+function withCategory(data: Json): Json {
+  const flat = (value: unknown): unknown => {
+    if (typeof value !== 'object' || value === null) return value;
+    const record = value as Record<string, unknown>;
+    const categories = record.categories as Record<string, unknown>[] | undefined;
+    const first = Array.isArray(categories) ? categories[0] : undefined;
+    const view = record.view === undefined ? {} : { view: flat(record.view) };
+    if (!first) return { ...record, ...view };
+    const { seedIds, groupStage, knockout, ranking } = first;
+    return { ...record, ...view, seedIds, groupStage, knockout, ranking };
+  };
+  return flat(data) as Json;
+}
+
 async function call(method: string, path: string, body?: unknown) {
-  const response = await fetch(`${base}${path}`, {
+  const scoped = /^\/(grupos|llaves)\b/.test(path) ? `${CATEGORY}${path}` : path;
+  const response = await fetch(`${base}${scoped}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  return { status: response.status, data: (await response.json()) as Json };
+  return { status: response.status, data: withCategory((await response.json()) as Json) };
 }
 
 interface View {
@@ -224,7 +246,7 @@ describe('Configuración del torneo', () => {
     sport: 'Tenis de mesa',
     format: 'Grupos + eliminación',
     modalities: ['Individual'],
-    categories: ['Sub 13', 'Mayores'],
+    categories: ['Mayores (Libre)', 'Sub 13'],
     startDate: '2026-11-20',
     endDate: '2026-11-21',
     location: 'Coliseo Norte',
@@ -247,6 +269,9 @@ describe('Configuración del torneo', () => {
   it('rechaza valores inválidos', async () => {
     const noCategory = await call('PUT', '/configuracion', { ...settings, categories: [] });
     assert.equal(noCategory.status, 400);
+    // Its only category has players: it can't be taken out.
+    const removed = await call('PUT', '/configuracion', { ...settings, categories: ['Sub 13'] });
+    assert.equal(removed.status, 409);
     const noStart = await call('PUT', '/configuracion', { ...settings, startDate: null });
     assert.equal(noStart.status, 400);
     const points = await call('PUT', '/configuracion', { ...settings, pointsWin: 1 });
@@ -506,30 +531,95 @@ describe('Crear torneo', () => {
     assert.ok(ids.includes('copa-sub-13-nandu'));
   });
 
+  const sub11 = `/categorias/${encodeURIComponent('Sub 11')}`;
+  const sub13 = `/categorias/${encodeURIComponent('Sub 13')}`;
+  interface CategoryData {
+    name: string;
+    registered: number;
+    groupStage: {
+      groups: { players: { name: string }[]; matches: { summary: { finished: boolean } }[] }[];
+    } | null;
+  }
+  const categoryOf = (data: Record<string, unknown>, name: string) =>
+    (data.categories as CategoryData[]).find((category) => category.name === name);
+
   it('con «solo sets» se carga el marcador final y no los puntos de cada set', async () => {
     const id = '/copa-sub-13-nandu';
     for (const name of ['Ana', 'Bea', 'Caro']) {
-      await request('POST', `${id}/participantes`, { name, delegation: '', ranking: null });
+      await request('POST', `${id}/participantes`, {
+        name,
+        delegation: '',
+        ranking: null,
+        category: 'Sub 11',
+      });
     }
-    await request('POST', `${id}/grupos/sorteo`, { groupSize: 3 });
-    const bySet = await request('PUT', `${id}/grupos/0/partidos/0/sets/0`, { side: 0, value: 11 });
+    await request('POST', `${id}${sub11}/grupos/sorteo`, { groupSize: 3 });
+    const path = `${id}${sub11}/grupos/0/partidos/0`;
+    const bySet = await request('PUT', `${path}/sets/0`, { side: 0, value: 11 });
     assert.equal(bySet.status, 409);
-    const tooMany = await request('PUT', `${id}/grupos/0/partidos/0/marcador`, {
-      side: 0,
-      value: 4,
-    });
+    const tooMany = await request('PUT', `${path}/marcador`, { side: 0, value: 4 });
     assert.equal(tooMany.status, 400);
-    await request('PUT', `${id}/grupos/0/partidos/0/marcador`, { side: 0, value: 3 });
-    const { data } = await request('PUT', `${id}/grupos/0/partidos/0/marcador`, {
-      side: 1,
-      value: 1,
-    });
-    const match = (
-      data as { groupStage: { groups: { matches: { summary: { finished: boolean } }[] }[] } }
-    ).groupStage.groups
-      .at(0)
-      ?.matches.at(0);
+    await request('PUT', `${path}/marcador`, { side: 0, value: 3 });
+    const { data } = await request('PUT', `${path}/marcador`, { side: 1, value: 1 });
+    const match = categoryOf(data, 'Sub 11')?.groupStage?.groups.at(0)?.matches.at(0);
     assert.equal(match?.summary.finished, true);
+  });
+
+  it('cada categoría tiene sus propios grupos: no se mezclan', async () => {
+    const id = '/copa-sub-13-nandu';
+    // Two categories: the player's category is required.
+    const missing = await request('POST', `${id}/participantes`, {
+      name: 'Sin Cat',
+      ranking: null,
+    });
+    assert.equal(missing.status, 400);
+    for (const name of ['Dani', 'Eva', 'Fer']) {
+      await request('POST', `${id}/participantes`, {
+        name,
+        delegation: '',
+        ranking: null,
+        category: 'Sub 13',
+      });
+    }
+    const { data } = await request('POST', `${id}${sub13}/grupos/sorteo`, { groupSize: 3 });
+    const sub13Names = categoryOf(data, 'Sub 13')?.groupStage?.groups.flatMap((group) =>
+      group.players.map((player) => player.name),
+    );
+    assert.deepEqual(sub13Names?.toSorted(), ['Dani', 'Eva', 'Fer']);
+    // Sub 11 keeps its own draw and its result.
+    const sub11Names = categoryOf(data, 'Sub 11')?.groupStage?.groups.flatMap((group) =>
+      group.players.map((player) => player.name),
+    );
+    assert.deepEqual(sub11Names?.toSorted(), ['Ana', 'Bea', 'Caro']);
+    // A category the tournament doesn't have.
+    const unknown = await request('POST', `${id}/categorias/Senior/grupos/sorteo`, {
+      groupSize: 3,
+    });
+    assert.equal(unknown.status, 404);
+  });
+
+  it('al importar, cada categoría del archivo se asigna a una del torneo (o no se importa)', async () => {
+    const id = '/copa-sub-13-nandu-2';
+    const rows = [
+      ['NUMBER', 'NOMBRE', 'LIGA', 'GENERO', 'IND', 'CATEG'],
+      ['1', 'Gabi', 'AMAGÁ', 'F', 'X', 'PREJUVENIL'],
+      ['2', 'Hugo', 'ANDES', 'M', 'X', 'JUVENIL'],
+      ['3', 'Iris', 'JERICÓ', 'F', 'X', 'SUB11'],
+    ];
+    const preview = await request('POST', `${id}/participantes/importar`, { rows, dryRun: true });
+    // "SUB11" is the tournament's "Sub 11"; the other two still need a decision.
+    assert.equal((preview.data.errors as string[]).length, 2);
+    const imported = await request('POST', `${id}/participantes/importar`, {
+      rows,
+      categoryMap: { PREJUVENIL: 'Sub 11', JUVENIL: null },
+    });
+    assert.equal(imported.status, 201);
+    const players = (imported.data.view as { players: { name: string; category: string }[] })
+      .players;
+    assert.deepEqual(players.map((player) => `${player.name}: ${player.category}`).toSorted(), [
+      'Gabi: Sub 11',
+      'Iris: Sub 11',
+    ]);
   });
 
   it('elimina a todos los jugadores (y sus grupos) solo si no hay resultados', async () => {
@@ -538,17 +628,18 @@ describe('Crear torneo', () => {
     assert.equal(blocked.status, 409);
 
     const id = '/copa-sub-13-nandu-2';
-    for (const name of ['Ana', 'Bea', 'Caro']) {
-      await request('POST', `${id}/participantes`, { name, delegation: '', ranking: null });
-    }
-    await request('POST', `${id}/grupos/sorteo`, { groupSize: 3 });
+    await request('POST', `${id}/participantes`, {
+      name: 'Juan',
+      ranking: null,
+      category: 'Sub 11',
+    });
+    await request('POST', `${id}${sub11}/grupos/sorteo`, { groupSize: 3 });
     const { status, data } = await request('DELETE', `${id}/participantes`);
     assert.equal(status, 200);
     assert.deepEqual(data.players, []);
-    assert.equal(data.groupStage, null);
+    assert.equal(categoryOf(data, 'Sub 11')?.groupStage, null);
   });
 });
-
 describe('Eliminar torneo', () => {
   it('elimina el torneo', async () => {
     const removed = await fetch(base, { method: 'DELETE' });

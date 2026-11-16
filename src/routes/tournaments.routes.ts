@@ -5,6 +5,8 @@ import * as controller from '../controllers/tournaments.controller.ts';
 export const tournamentsRouter = Router();
 
 const base = '/:tournamentId';
+/** Each category plays its own competition: groups and bracket go under its name. */
+const stage = `${base}/categorias/:category`;
 
 tournamentsRouter.get('/', controller.listTournaments);
 tournamentsRouter.post('/', controller.createTournament);
@@ -22,31 +24,34 @@ tournamentsRouter.put(`${base}/participantes/:playerId`, controller.updatePlayer
 tournamentsRouter.delete(`${base}/participantes/:playerId`, controller.removePlayer);
 
 // Group stage
-tournamentsRouter.get(`${base}/grupos/vista-previa`, controller.previewGroupDraw);
-tournamentsRouter.post(`${base}/grupos/sorteo`, controller.drawGroups);
-tournamentsRouter.put(`${base}/grupos/:groupIndex/jugadores`, controller.setGroupPlayers);
+tournamentsRouter.get(`${stage}/grupos/vista-previa`, controller.previewGroupDraw);
+tournamentsRouter.post(`${stage}/grupos/sorteo`, controller.drawGroups);
+tournamentsRouter.put(`${stage}/grupos/:groupIndex/jugadores`, controller.setGroupPlayers);
 tournamentsRouter.put(
-  `${base}/grupos/:groupIndex/partidos/:matchIndex/sets/:setIndex`,
+  `${stage}/grupos/:groupIndex/partidos/:matchIndex/sets/:setIndex`,
   controller.updateSet,
 );
 tournamentsRouter.put(
-  `${base}/grupos/:groupIndex/partidos/:matchIndex/marcador`,
+  `${stage}/grupos/:groupIndex/partidos/:matchIndex/marcador`,
   controller.updateScore,
 );
-tournamentsRouter.put(`${base}/grupos/:groupIndex/partidos/:matchIndex/wo`, controller.setWalkover);
+tournamentsRouter.put(
+  `${stage}/grupos/:groupIndex/partidos/:matchIndex/wo`,
+  controller.setWalkover,
+);
 
 // Knockout
-tournamentsRouter.post(`${base}/llaves/sorteo`, controller.drawKnockout);
-tournamentsRouter.put(`${base}/llaves/posiciones/:position`, controller.moveKnockoutSlot);
+tournamentsRouter.post(`${stage}/llaves/sorteo`, controller.drawKnockout);
+tournamentsRouter.put(`${stage}/llaves/posiciones/:position`, controller.moveKnockoutSlot);
 tournamentsRouter.put(
-  `${base}/llaves/rondas/:round/partidos/:matchIndex/sets/:setIndex`,
+  `${stage}/llaves/rondas/:round/partidos/:matchIndex/sets/:setIndex`,
   controller.updateKnockoutSet,
 );
 tournamentsRouter.put(
-  `${base}/llaves/rondas/:round/partidos/:matchIndex/marcador`,
+  `${stage}/llaves/rondas/:round/partidos/:matchIndex/marcador`,
   controller.updateKnockoutScore,
 );
 tournamentsRouter.put(
-  `${base}/llaves/rondas/:round/partidos/:matchIndex/wo`,
+  `${stage}/llaves/rondas/:round/partidos/:matchIndex/wo`,
   controller.setKnockoutWalkover,
 );

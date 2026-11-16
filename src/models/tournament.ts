@@ -39,12 +39,11 @@ export interface TournamentSettings {
   thirdPlaceMatch: boolean;
 }
 
-export interface Tournament {
-  id: string;
-  name: string;
-  settings: TournamentSettings;
-  /** Registered players (kept sorted by ranking). */
-  players: Player[];
+/**
+ * The competition of one category: categories never mix, so each one has its own groups,
+ * results and bracket.
+ */
+export interface CategoryStage {
   /** Drawn groups (they hold the same Player objects as `players`), or null before the draw. */
   groups: Group[] | null;
   /** Match results keyed by "groupIndex-matchIndex". */
@@ -56,4 +55,63 @@ export interface Tournament {
    * 3rd place is match 1 of the final's round.
    */
   knockoutResults: Results;
+}
+
+export interface Tournament {
+  id: string;
+  name: string;
+  settings: TournamentSettings;
+  /** Registered players of every category (kept sorted by ranking). */
+  players: Player[];
+  /** Competition of each category, by category name (created when first used). */
+  stages: Partial<Record<string, CategoryStage>>;
+}
+
+/**
+ * One category of a tournament seen as a single competition: its players and its stage.
+ * The rules (domain/) and the view work on this; changes are written back with
+ * `commitScope`.
+ */
+export interface CategoryScope extends CategoryStage {
+  id: string;
+  name: string;
+  settings: TournamentSettings;
+  category: string;
+  /** Players of this category only. */
+  players: Player[];
+}
+
+export function emptyStage(): CategoryStage {
+  return { groups: null, results: {}, knockout: null, knockoutResults: {} };
+}
+
+/** The category's players and competition (an empty one if nothing was drawn yet). */
+export function scopeOf(tournament: Tournament, category: string): CategoryScope {
+  const stage = tournament.stages[category] ?? emptyStage();
+  return {
+    id: tournament.id,
+    name: tournament.name,
+    settings: tournament.settings,
+    category,
+    players: tournament.players.filter((player) => player.category === category),
+    groups: stage.groups,
+    results: stage.results,
+    knockout: stage.knockout,
+    knockoutResults: stage.knockoutResults,
+  };
+}
+
+/** Writes a category's competition back into the tournament. */
+export function commitScope(tournament: Tournament, scope: CategoryScope): void {
+  tournament.stages[scope.category] = {
+    groups: scope.groups,
+    results: scope.results,
+    knockout: scope.knockout,
+    knockoutResults: scope.knockoutResults,
+  };
+}
+
+/** Every category's competition (one per category of the settings). */
+export function allScopes(tournament: Tournament): CategoryScope[] {
+  return tournament.settings.categories.map((category) => scopeOf(tournament, category));
 }

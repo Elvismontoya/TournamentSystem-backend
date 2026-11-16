@@ -20,6 +20,8 @@ import {
 } from './parse.ts';
 
 const id = (request: Request) => textParam(request, 'tournamentId');
+/** Category of the competition (/categorias/:category/…), as in the settings. */
+const category = (request: Request) => textParam(request, 'category');
 
 export const getTournament: RequestHandler = (request, response) => {
   response.json(service.getTournament(id(request)));
@@ -151,21 +153,42 @@ function rowsOf(value: unknown): string[][] {
 export const importPlayers: RequestHandler = (request, response) => {
   const data = body(request);
   const rows = data.rows === undefined ? textToRows(str(data.text, 'text')) : rowsOf(data.rows);
+  const map = categoryMapOf(data.categoryMap);
   if (data.dryRun === true) {
-    response.json(service.previewImport(id(request), rows));
+    response.json(service.previewImport(id(request), rows, map));
     return;
   }
-  response.status(201).json(service.importPlayers(id(request), rows));
+  response.status(201).json(service.importPlayers(id(request), rows, map));
 };
+
+/** { "JUVENIL": "Sub 19", "PREJUVENIL": null } — file category → tournament category or null. */
+function categoryMapOf(value: unknown): service.CategoryMap {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpError(
+      400,
+      '«categoryMap» debe ser un objeto { categoría del archivo: categoría }.',
+    );
+  }
+  const map: service.CategoryMap = {};
+  for (const [from, to] of Object.entries(value as Record<string, unknown>)) {
+    if (to !== null && typeof to !== 'string') {
+      throw new HttpError(400, '«categoryMap»: cada valor debe ser una categoría o null.');
+    }
+    map[from] = to;
+  }
+  return map;
+}
+
 export const previewGroupDraw: RequestHandler = (request, response) => {
   const size = Number(request.query.tamano);
   if (!Number.isInteger(size)) throw new HttpError(400, '«tamano» debe ser un número entero.');
-  response.json(service.previewGroupDraw(id(request), size));
+  response.json(service.previewGroupDraw(id(request), category(request), size));
 };
 
 export const drawGroups: RequestHandler = (request, response) => {
   const groupSize = int(body(request).groupSize, 'groupSize');
-  response.json(service.drawTournamentGroups(id(request), groupSize));
+  response.json(service.drawTournamentGroups(id(request), category(request), groupSize));
 };
 
 export const setGroupPlayers: RequestHandler = (request, response) => {
@@ -173,7 +196,14 @@ export const setGroupPlayers: RequestHandler = (request, response) => {
   if (!Array.isArray(playerIds) || !playerIds.every((value) => typeof value === 'string')) {
     throw new HttpError(400, '«playerIds» debe ser una lista de ids.');
   }
-  response.json(service.setGroupPlayers(id(request), intParam(request, 'groupIndex'), playerIds));
+  response.json(
+    service.setGroupPlayers(
+      id(request),
+      category(request),
+      intParam(request, 'groupIndex'),
+      playerIds,
+    ),
+  );
 };
 
 export const updateSet: RequestHandler = (request, response) => {
@@ -181,6 +211,7 @@ export const updateSet: RequestHandler = (request, response) => {
   response.json(
     service.updateSet(
       id(request),
+      category(request),
       intParam(request, 'groupIndex'),
       intParam(request, 'matchIndex'),
       intParam(request, 'setIndex'),
@@ -195,6 +226,7 @@ export const updateScore: RequestHandler = (request, response) => {
   response.json(
     service.updateScore(
       id(request),
+      category(request),
       intParam(request, 'groupIndex'),
       intParam(request, 'matchIndex'),
       side(data.side, 'side'),
@@ -208,6 +240,7 @@ export const updateKnockoutScore: RequestHandler = (request, response) => {
   response.json(
     service.updateKnockoutScore(
       id(request),
+      category(request),
       intParam(request, 'round'),
       intParam(request, 'matchIndex'),
       side(data.side, 'side'),
@@ -221,6 +254,7 @@ export const setWalkover: RequestHandler = (request, response) => {
   response.json(
     service.setWalkover(
       id(request),
+      category(request),
       intParam(request, 'groupIndex'),
       intParam(request, 'matchIndex'),
       absent === null ? null : side(absent, 'absent'),
@@ -229,7 +263,7 @@ export const setWalkover: RequestHandler = (request, response) => {
 };
 
 export const drawKnockout: RequestHandler = (request, response) => {
-  response.json(service.drawTournamentKnockout(id(request)));
+  response.json(service.drawTournamentKnockout(id(request), category(request)));
 };
 
 function slotOf(value: unknown): BracketSlot {
@@ -252,6 +286,7 @@ export const updateKnockoutSet: RequestHandler = (request, response) => {
   response.json(
     service.updateKnockoutSet(
       id(request),
+      category(request),
       intParam(request, 'round'),
       intParam(request, 'matchIndex'),
       intParam(request, 'setIndex'),
@@ -266,6 +301,7 @@ export const setKnockoutWalkover: RequestHandler = (request, response) => {
   response.json(
     service.setKnockoutWalkover(
       id(request),
+      category(request),
       intParam(request, 'round'),
       intParam(request, 'matchIndex'),
       absent === null ? null : side(absent, 'absent'),
@@ -277,6 +313,7 @@ export const moveKnockoutSlot: RequestHandler = (request, response) => {
   response.json(
     service.moveKnockoutSlot(
       id(request),
+      category(request),
       intParam(request, 'position'),
       slotOf(body(request).slot),
     ),
