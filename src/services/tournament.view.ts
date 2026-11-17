@@ -41,7 +41,15 @@ import {
 } from '../domain/knockout.ts';
 import { individualPlayers, nextFreeBib, sortByRanking, type Player } from '../domain/players.ts';
 import { finalRanking, knockoutFinished, type RankingEntry } from '../domain/ranking.ts';
-import { allScopes, type CategoryScope, type Tournament } from '../models/tournament.ts';
+import {
+  allScopes,
+  competitionsOf,
+  scopeOf,
+  type CategoryScope,
+  type Competition,
+  type Division,
+  type Tournament,
+} from '../models/tournament.ts';
 
 /** Tournament settings plus limits, flattened for the frontend (Configuración and the rest). */
 export interface SettingsView {
@@ -49,6 +57,8 @@ export interface SettingsView {
   format: string;
   modalities: string[];
   categories: string[];
+  /** Masculino/Femenino, or Mixto alone. */
+  divisions: Division[];
   startDate: string | null;
   endDate: string | null;
   location: string;
@@ -153,11 +163,13 @@ export interface GroupStageView {
   knockoutSize: number;
 }
 
-/** The competition of one category: its draw, matches, bracket and final ranking. */
+/** One competition (a category in a division): its draw, matches, bracket and ranking. */
 export interface CategoryView {
-  /** Category name ("Sub 13"…), as in the settings. */
+  /** "Sub 19 · Femenino": the competition's key (used in the routes). */
   name: string;
-  /** Players registered in this category. */
+  category: string;
+  division: Division;
+  /** Players of this competition. */
   registered: number;
   /** Seeded players (top of the ranking, one per group), in seed order. */
   seedIds: string[];
@@ -175,7 +187,7 @@ export interface TournamentView {
   players: Player[];
   /** Nr. a new player gets if none is given (Nr. are unique in the whole tournament). */
   nextBib: number;
-  /** One competition per category, in the order of the settings: they never mix. */
+  /** One competition per category and division ("Sub 19 · Femenino"): they never mix. */
   categories: CategoryView[];
 }
 
@@ -197,6 +209,7 @@ function settingsOf(tournament: Tournament): SettingsView {
     format: settings.format,
     modalities: settings.modalities,
     categories: settings.categories,
+    divisions: settings.divisions,
     startDate: settings.startDate,
     endDate: settings.endDate,
     location: settings.location,
@@ -396,9 +409,11 @@ function seedsOf(tournament: CategoryScope): Player[] {
   return sortByRanking(groups.flatMap((group) => group.players)).slice(0, groups.length);
 }
 
-function categoryView(scope: CategoryScope): CategoryView {
+function categoryView(scope: CategoryScope, competition: Competition): CategoryView {
   return {
-    name: scope.category,
+    name: competition.key,
+    category: competition.category,
+    division: competition.division,
     registered: scope.players.length,
     seedIds: seedsOf(scope).map((player) => player.id),
     groupStage: groupStageOf(scope),
@@ -414,7 +429,9 @@ export function tournamentView(tournament: Tournament): TournamentView {
     settings: settingsOf(tournament),
     players: tournament.players,
     nextBib: nextFreeBib(tournament.players),
-    categories: allScopes(tournament).map(categoryView),
+    categories: competitionsOf(tournament.settings).map((competition) =>
+      categoryView(scopeOf(tournament, competition.key), competition),
+    ),
   };
 }
 

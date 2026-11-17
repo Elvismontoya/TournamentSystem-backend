@@ -34,7 +34,11 @@ import { HttpError } from '../httpError.ts';
 import {
   allScopes,
   commitScope,
+  competitionOfPlayer,
+  competitionsOf,
+  DIVISIONS,
   scopeOf,
+  type Division,
   type CategoryScope,
   type Tournament,
   type TournamentSettings,
@@ -74,8 +78,8 @@ function loadScope(
   category: string,
 ): { tournament: Tournament; scope: CategoryScope } {
   const tournament = load(tournamentId);
-  if (!tournament.settings.categories.includes(category)) {
-    throw new HttpError(404, `El torneo no tiene la categoría «${category}».`);
+  if (!competitionsOf(tournament.settings).some((competition) => competition.key === category)) {
+    throw new HttpError(404, `El torneo no tiene la competencia «${category}».`);
   }
   return { tournament, scope: scopeOf(tournament, category) };
 }
@@ -133,6 +137,8 @@ export interface SettingsUpdate {
   format: string;
   modalities: string[];
   categories: string[];
+  /** Masculino/Femenino, or Mixto alone. Left out: keeps the current ones. */
+  divisions?: string[];
   startDate: string | null;
   endDate: string | null;
   location: string;
@@ -156,6 +162,7 @@ const NEW_TOURNAMENT_SETTINGS: TournamentSettings = {
   format: 'Grupos + eliminación',
   modalities: ['Individual'],
   categories: [],
+  divisions: ['Masculino', 'Femenino'],
   startDate: null,
   endDate: null,
   location: '',
@@ -178,6 +185,21 @@ function text(value: string, label: string, required = false): string {
   }
   return trimmed;
 }
+
+/** Divisions by gender: "Masculino" and/or "Femenino", or "Mixto" alone. */
+function divisionsOf(values: string[]): Division[] {
+  const chosen = DIVISIONS.filter((division) => values.includes(division));
+  if (chosen.length === 0 || chosen.length !== new Set(values).size) {
+    throw new HttpError(400, 'Elige la rama: Masculino, Femenino o Mixto.');
+  }
+  if (chosen.includes('Mixto') && chosen.length > 1) {
+    throw new HttpError(400, 'La rama Mixto va sola: en ella juegan hombres y mujeres juntos.');
+  }
+  return chosen;
+}
+
+const genderName = (player: Pick<Player, 'gender'>) =>
+  player.gender === 'F' ? 'femenino' : player.gender === 'M' ? 'masculino' : 'sin género';
 
 /** A list of catalog names (modalities, categories): trimmed, without repeats, at least one. */
 function names(values: string[], label: string): string[] {
@@ -307,18 +329,27 @@ function checkedSettings(
     );
   }
 
-  // A category can only be removed while it has no players and nothing drawn.
   const categories = names(update.categories, 'categoría');
-  for (const removed of current.categories.filter((name) => !categories.includes(name))) {
-    const scope = scopeOf(tournament, removed);
-    if (scope.players.length > 0 || scope.groups) {
+  const divisions = divisionsOf(update.divisions ?? current.divisions);
+  // Every competition that goes away must have nothing drawn, and every player must still
+  // have a competition (their category, and their gender's division unless it is mixed).
+  const next = { ...current, categories, divisions };
+  const keys = new Set(competitionsOf(next).map((competition) => competition.key));
+  for (const scope of allScopes(tournament)) {
+    if (!keys.has(scope.category) && scope.groups) {
       throw new HttpError(
         409,
-        `La categoría «${removed}» tiene jugadores o grupos: elimínalos o pásalos a otra categoría antes de quitarla.`,
+        `«${scope.category}» ya tiene grupos sorteados: no se puede quitar esa categoría o rama.`,
       );
     }
   }
-
+  const homeless = tournament.players.find((player) => !competitionOfPlayer(next, player));
+  if (homeless) {
+    throw new HttpError(
+      409,
+      `${homeless.name} (${homeless.category ?? 'sin categoría'}, ${genderName(homeless)}) se quedaría sin competencia: elimínalo o cámbialo antes de quitar esa categoría o rama.`,
+    );
+  }
   return {
     name,
     settings: {
@@ -326,6 +357,7 @@ function checkedSettings(
       format: text(update.format, 'el formato', true),
       modalities: names(update.modalities, 'modalidad'),
       categories,
+      divisions,
       startDate,
       endDate,
       location: text(update.location, 'El lugar'),
@@ -353,11 +385,10 @@ export function updateSettings(tournamentId: string, update: SettingsUpdate): To
   tournament.name = name;
   tournament.settings = settings;
 
-  // Categories taken out (with nothing in them) lose their (empty) competition.
+  // Competitions taken out (with nothing drawn) lose their (empty) draw.
+  const keys = new Set(competitionsOf(settings).map((competition) => competition.key));
   tournament.stages = Object.fromEntries(
-    Object.entries(tournament.stages).filter(([category]) =>
-      settings.categories.includes(category),
-    ),
+    Object.entries(tournament.stages).filter(([key]) => keys.has(key)),
   );
   for (const scope of allScopes(tournament)) {
     // No results yet: empty scoresheets must match the (possibly new) rules.
@@ -483,6 +514,22 @@ function categoryFor(tournament: Tournament, given: string | null | undefined): 
   return name;
 }
 
+/**
+ * Why a player has no competition in the tournament (their gender's division doesn't exist,
+ * or no gender was given), or null when they have one.
+ */
+function divisionProblem(
+  settings: TournamentSettings,
+  player: Pick<Player, 'category' | 'gender'>,
+): string | null {
+  if (settings.divisions.includes('Mixto')) return null;
+  if (player.gender === null) return 'falta el género (F o M)';
+  const division = player.gender === 'F' ? 'Femenino' : 'Masculino';
+  return settings.divisions.includes(division)
+    ? null
+    : `el torneo no tiene rama ${division.toLowerCase()}`;
+}
+
 /** Registers players: there is no limit of places ("cupos"). */
 function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
   const assigned: number[] = [];
@@ -500,6 +547,10 @@ function register(tournament: Tournament, entries: NewPlayer[]): Player[] {
       modalities: entry.modalities ?? { ...INDIVIDUAL_ONLY },
     };
   });
+  for (const player of added) {
+    const problem = divisionProblem(tournament.settings, player);
+    if (problem) throw new HttpError(400, `${player.name}: ${problem}.`);
+  }
   // Players added after the draw stay "sin grupo" until placed by hand or redrawn.
   tournament.players = sortByRanking([...tournament.players, ...added]);
   return added;
@@ -521,10 +572,11 @@ function requirePlayer(tournament: Tournament, playerId: string): Player {
   return player;
 }
 
-/** The group a player is in, in their category's draw (or null). */
+/** The group a player is in, in their competition's draw (or null). */
 function groupOf(tournament: Tournament, player: Player): string | null {
-  if (player.category === null) return null;
-  const { groups } = scopeOf(tournament, player.category);
+  const competition = competitionOfPlayer(tournament.settings, player);
+  if (!competition) return null;
+  const { groups } = scopeOf(tournament, competition.key);
   const place = groups ? locatePlayer(groups, player) : null;
   return groups && place ? (groups[place.groupIndex]?.name ?? null) : null;
 }
@@ -545,25 +597,28 @@ export function updatePlayer(
     entry,
     tournament.players.filter((candidate) => candidate !== player),
   );
-  let category = player.category;
-  if (entry.category !== undefined) {
-    category = categoryFor(tournament, entry.category);
-    const group = groupOf(tournament, player);
-    if (category !== player.category && group !== null) {
-      throw new HttpError(
-        409,
-        `${player.name} está en el Grupo ${group} de ${player.category ?? ''}: sácalo del grupo antes de cambiarle la categoría.`,
-      );
-    }
-  }
-  // Gender only changes when sent; modalities stay as imported.
+  const category =
+    entry.category === undefined ? player.category : categoryFor(tournament, entry.category);
+  const gender = entry.gender === undefined ? player.gender : entry.gender;
+  const problem = divisionProblem(tournament.settings, { category, gender });
+  if (problem) throw new HttpError(400, `${player.name}: ${problem}.`);
+  // Category and gender decide the competition: it can only change while in no group.
+  const from = competitionOfPlayer(tournament.settings, player);
+  const to = competitionOfPlayer(tournament.settings, { ...player, category, gender });
+  const group = groupOf(tournament, player);
+  if (from?.key !== to?.key && group !== null) {
+    throw new HttpError(
+      409,
+      `${player.name} está en el Grupo ${group} de ${from?.key ?? ''}: sácalo del grupo antes de cambiarle la categoría o el género.`,
+    );
+  } // Gender only changes when sent; modalities stay as imported.
   Object.assign(player, {
     name: entry.name.trim(),
     delegation: entry.delegation.trim(),
     ranking: entry.ranking,
     bib: entry.bib,
     category,
-    ...(entry.gender === undefined ? {} : { gender: entry.gender }),
+    gender,
   });
   tournament.players = sortByRanking(tournament.players);
   return save(tournament);
@@ -682,6 +737,11 @@ export function previewImport(
       continue;
     }
     players.push({ ...player, category: target });
+    const problem = divisionProblem(tournament.settings, {
+      category: target,
+      gender: player.gender ?? null,
+    });
+    if (problem) errors.push(`${player.name}: ${problem}.`);
     const owner = tournament.players.find((candidate) => candidate.bib === player.bib);
     if (owner) {
       errors.push(`${player.name}: el número ${String(player.bib)} ya es de ${owner.name}.`);

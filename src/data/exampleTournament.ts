@@ -38,6 +38,7 @@ export const EXAMPLE_SETTINGS: TournamentSettings = {
   format: 'Grupos + eliminación',
   modalities: ['Individual'],
   categories: ['Mayores (Libre)'],
+  divisions: ['Masculino'],
   startDate: '2026-11-15',
   endDate: '2026-11-16',
   location: 'Coliseo Central',

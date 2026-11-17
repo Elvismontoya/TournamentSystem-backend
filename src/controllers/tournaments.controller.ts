@@ -39,6 +39,7 @@ function settingsBody(data: Record<string, unknown>): service.SettingsUpdate {
     format: str(data.format, 'format'),
     modalities: strList(data.modalities, 'modalities'),
     categories: strList(data.categories, 'categories'),
+    ...(data.divisions === undefined ? {} : { divisions: strList(data.divisions, 'divisions') }),
     startDate: strOrNull(data.startDate, 'startDate'),
     endDate: strOrNull(data.endDate, 'endDate'),
     location: optionalStr(data.location, 'location'),
