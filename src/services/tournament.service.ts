@@ -481,6 +481,10 @@ export function deleteTournament(tournamentId: string): void {
 
 function validateNewPlayer(entry: NewPlayer, players: Player[]): void {
   if (entry.name.trim() === '') throw new HttpError(400, 'Escribe el nombre del jugador.');
+  // Required by hand ("Independiente" if none); imported lists may still leave it empty.
+  if (entry.delegation.trim() === '') {
+    throw new HttpError(400, 'Escribe la liga, delegación o club del jugador.');
+  }
   if (entry.bib !== undefined) {
     if (!Number.isInteger(entry.bib) || entry.bib < 1) {
       throw new HttpError(400, 'El Nr. debe ser un número entero mayor que 0.');

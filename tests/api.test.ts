@@ -98,9 +98,23 @@ describe('API del torneo', () => {
     assert.equal(added.status, 201);
     assert.equal((added.data.added as { bib: number }).bib, 17);
 
-    const duplicate = await call('POST', '/participantes', { name: 'Otro', bib: 7 });
+    const duplicate = await call('POST', '/participantes', {
+      name: 'Otro',
+      delegation: 'Club Norte',
+      bib: 7,
+    });
     assert.equal(duplicate.status, 409);
     assert.equal(duplicate.data.error, 'El Nr. 7 ya es de Carlos Silva.');
+
+    // The delegation is required ("Independiente" if none).
+    const noDelegation = await call('POST', '/participantes', {
+      name: 'Sin Liga',
+      delegation: ' ',
+      ranking: null,
+      gender: 'M',
+    });
+    assert.equal(noDelegation.status, 400);
+    assert.equal(noDelegation.data.error, 'Escribe la liga, delegación o club del jugador.');
   });
 
   it('importar: vista previa con errores por línea, luego importa', async () => {
@@ -217,6 +231,7 @@ describe('API del torneo', () => {
 
     const added = await call('POST', '/participantes', {
       name: 'Sin Grupo',
+      delegation: 'Club Norte',
       ranking: null,
       gender: 'M',
     });
@@ -554,7 +569,7 @@ describe('Crear torneo', () => {
     for (const name of ['Ana', 'Bea', 'Caro']) {
       await request('POST', `${id}/participantes`, {
         name,
-        delegation: '',
+        delegation: 'Club',
         ranking: null,
         category: 'Sub 11',
       });
@@ -576,13 +591,14 @@ describe('Crear torneo', () => {
     // Two categories: the player's category is required.
     const missing = await request('POST', `${id}/participantes`, {
       name: 'Sin Cat',
+      delegation: 'Club',
       ranking: null,
     });
     assert.equal(missing.status, 400);
     for (const name of ['Dani', 'Eva', 'Fer']) {
       await request('POST', `${id}/participantes`, {
         name,
-        delegation: '',
+        delegation: 'Club',
         ranking: null,
         category: 'Sub 13',
       });
@@ -677,7 +693,11 @@ describe('Crear torneo', () => {
       ['Sub 13 · Masculino', 'Sub 13 · Femenino'],
     );
     // Without a gender there is no division to play in.
-    const noGender = await request('POST', `${id}/participantes`, { name: 'X', ranking: null });
+    const noGender = await request('POST', `${id}/participantes`, {
+      name: 'X',
+      delegation: 'Club',
+      ranking: null,
+    });
     assert.equal(noGender.status, 400);
     for (const [name, gender] of [
       ['Ana', 'F'],
@@ -687,7 +707,12 @@ describe('Crear torneo', () => {
       ['Elio', 'M'],
       ['Fede', 'M'],
     ]) {
-      await request('POST', `${id}/participantes`, { name, gender, ranking: null });
+      await request('POST', `${id}/participantes`, {
+        name,
+        delegation: 'Club',
+        gender,
+        ranking: null,
+      });
     }
     const women = `/categorias/${encodeURIComponent('Sub 13 · Femenino')}`;
     const { data } = await request('POST', `${id}${women}/grupos/sorteo`, { groupSize: 3 });
@@ -706,6 +731,7 @@ describe('Crear torneo', () => {
     const id = '/copa-sub-13-nandu-2';
     await request('POST', `${id}/participantes`, {
       name: 'Juan',
+      delegation: 'Club',
       ranking: null,
       category: 'Sub 11',
     });
