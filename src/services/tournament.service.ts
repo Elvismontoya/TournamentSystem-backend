@@ -1029,6 +1029,12 @@ function requireKnockoutNotStarted(tournament: CategoryScope): void {
 export function drawTournamentKnockout(tournamentId: string, category: string): TournamentView {
   const { tournament: owner, scope: tournament } = loadScope(tournamentId, category);
   const groups = requireGroups(tournament);
+  if (groups.length === 1) {
+    throw new HttpError(
+      409,
+      'Es un grupo único: no hay llaves, la tabla del grupo es el resultado final.',
+    );
+  }
   requireKnockoutNotStarted(tournament);
   // Qualifiers already known are kept apart from their delegation in the first round.
   tournament.knockout = drawKnockout(

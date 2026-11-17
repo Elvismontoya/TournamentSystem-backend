@@ -166,12 +166,13 @@ export function delegationClashes(group: Group): string[] {
 }
 
 /**
- * Seeded random draw: the top `groupCount` players by ranking head one group each
- * (seed 1 → group 1, seed 2 → group 2…); with `seeded` false nobody is placed by ranking.
- * Everyone else is placed at random but spreading delegations: players of the biggest
- * delegations go first, each to a group with the fewest players of their delegation (so two
- * players of the same delegation only share a group when it can't be avoided).
- * Group sizes are the same as dealing in turn: the first groups get the extra players.
+ * Snake draw ("serpiente") by ranking: the best `groupCount` players head one group each
+ * (seed 1 → group 1 … seed 4 → group 4), the next row goes back (group 4 → group 1), the next
+ * one forward again, and so on. Players with the same ranking (or none) are in random order
+ * among themselves. With `seeded` false there are no levels: see drawWithoutSeeds.
+ * Delegations are kept apart within each row (same level): a player whose snake group already
+ * has someone of their delegation trades places with another player of the same row, when
+ * that avoids it. Seeds never move. Group sizes are as `groupSizes` (first groups larger).
  */
 export function drawGroups(
   players: Player[],
@@ -179,50 +180,107 @@ export function drawGroups(
   random: () => number = Math.random,
   seeded = true,
 ): Group[] {
-  const byRanking = sortByRanking(players);
-  const seeds = seeded ? byRanking.slice(0, groupCount) : [];
+  if (!seeded) return drawWithoutSeeds(players, groupCount, random);
+  // Shuffled first, then a stable sort: ties in ranking end up in random order.
+  const order = sortByRanking(shuffle(players, random));
   const groups: Group[] = Array.from({ length: groupCount }, (_, index) => ({
     name: String(index + 1),
-    players: seeds[index] ? [seeds[index]] : [],
+    players: [],
   }));
-  const capacity = groups.map(
-    (_, index) =>
-      Math.floor(players.length / groupCount) + (index < players.length % groupCount ? 1 : 0),
-  );
+  const capacity = groupSizes(players.length, groupCount);
 
-  const rest = shuffle(byRanking.slice(seeds.length), random);
-  const delegationSize = new Map<string, number>();
-  for (const player of players) {
-    const key = delegationKey(player);
-    delegationSize.set(key, (delegationSize.get(key) ?? 0) + 1);
+  // Rows of the snake: which groups get a player in each row, in snake order.
+  let next = 0;
+  for (let row = 0; next < order.length; row++) {
+    const indexes = Array.from({ length: groupCount }, (_, index) => index);
+    if (row % 2 === 1) indexes.reverse(); // odd rows come back N → 1
+    const slots = indexes.filter((index) => row < (capacity[index] ?? 0));
+    const rowPlayers = order.slice(next, next + slots.length);
+    next += slots.length;
+    // The first row is the seeds: one per group, in order.
+    const placed = row === 0 ? rowPlayers : assignRow(groups, slots, rowPlayers);
+    slots.forEach((index, at) => {
+      const player = placed.at(at);
+      if (player) groups[index]?.players.push(player);
+    });
   }
-  const sizeOf = (player: Player) => {
-    const key = delegationKey(player);
-    return key === '' ? 0 : (delegationSize.get(key) ?? 0);
-  };
-  // Biggest delegations first (they are the hardest to spread); random order otherwise.
-  rest.sort((a, b) => sizeOf(b) - sizeOf(a));
-
-  for (const player of rest) {
-    const key = delegationKey(player);
-    const sameDelegation = (group: Group) =>
-      key === '' ? 0 : group.players.filter((member) => delegationKey(member) === key).length;
-    const open = groups.flatMap((group, index) =>
-      group.players.length < (capacity[index] ?? 0) ? [{ group, index }] : [],
-    );
-    const fewest = Math.min(...open.map(({ group }) => sameDelegation(group)));
-    const candidates = open.filter(({ group }) => sameDelegation(group) === fewest);
-    // Among equally good groups: the emptiest, then at random.
-    const smallest = Math.min(...candidates.map(({ group }) => group.players.length));
-    const best = candidates.filter(({ group }) => group.players.length === smallest);
-    const chosen = best.at(Math.floor(random() * best.length)) ?? open.at(0);
-    chosen?.group.players.push(player);
-  }
-  spreadDelegations(groups, new Set(seeds));
   return groups;
 }
 
-/** Pairs of players of the same delegation inside a group (what the draw tries to avoid). */
+/**
+ * Who goes to each slot of a snake row: each player prefers their own slot (the snake's),
+ * then the nearest ones, and only goes where no one of their delegation is yet (a maximum
+ * bipartite matching, so a clash only stays when it can't be avoided).
+ */
+function assignRow(groups: Group[], slots: number[], players: Player[]): Player[] {
+  const fits = (player: Player, slot: number) => {
+    const key = delegationKey(player);
+    const group = groups.at(slots[slot] ?? -1);
+    return key === '' || !group?.players.some((member) => delegationKey(member) === key);
+  };
+  const preferences = players.map((_, own) =>
+    slots.map((_, slot) => slot).sort((a, b) => Math.abs(a - own) - Math.abs(b - own)),
+  );
+  const owner: (number | undefined)[] = slots.map(() => undefined);
+  const tryPlace = (player: number, seen: boolean[]): boolean => {
+    for (const slot of preferences[player] ?? []) {
+      const who = players.at(player);
+      if (seen[slot] || !who || !fits(who, slot)) continue;
+      seen[slot] = true;
+      const current = owner[slot];
+      if (current === undefined || tryPlace(current, seen)) {
+        owner[slot] = player;
+        return true;
+      }
+    }
+    return false;
+  };
+  const unplaced = players.map((_, index) => index).filter((index) => !tryPlace(index, []));
+  // A clash that can't be avoided: the rest take the free slots in order.
+  return slots
+    .map((_, slot) => {
+      const index = owner[slot] ?? unplaced.shift();
+      return index === undefined ? undefined : players[index];
+    })
+    .filter((player): player is Player => player !== undefined);
+}
+/**
+ * Draw without seeds (ranking not used): everyone at random, spreading delegations. Players
+ * of the biggest delegations go first, each to a group with the fewest of their delegation
+ * (then the emptiest, then at random); swaps between any two groups fix what's left.
+ */
+function drawWithoutSeeds(players: Player[], groupCount: number, random: () => number): Group[] {
+  const groups: Group[] = Array.from({ length: groupCount }, (_, index) => ({
+    name: String(index + 1),
+    players: [],
+  }));
+  const capacity = groupSizes(players.length, groupCount);
+  const size = new Map<string, number>();
+  for (const player of players) {
+    const key = delegationKey(player);
+    size.set(key, (size.get(key) ?? 0) + 1);
+  }
+  const sizeOf = (player: Player) => {
+    const key = delegationKey(player);
+    return key === '' ? 0 : (size.get(key) ?? 0);
+  };
+  const order = shuffle(players, random).sort((a, b) => sizeOf(b) - sizeOf(a));
+  for (const player of order) {
+    const key = delegationKey(player);
+    const same = (group: Group) =>
+      key === '' ? 0 : group.players.filter((member) => delegationKey(member) === key).length;
+    const open = groups.filter((group, index) => group.players.length < (capacity[index] ?? 0));
+    const fewest = Math.min(...open.map(same));
+    const candidates = open.filter((group) => same(group) === fewest);
+    const smallest = Math.min(...candidates.map((group) => group.players.length));
+    const best = candidates.filter((group) => group.players.length === smallest);
+    (best.at(Math.floor(random() * best.length)) ?? open.at(0))?.players.push(player);
+  }
+  spreadDelegations(groups);
+  return groups;
+}
+
+/** Pairs of players of the same delegation inside a group. */
 function clashPairs(group: Group): number {
   const counts = new Map<string, number>();
   for (const player of group.players) {
@@ -232,23 +290,18 @@ function clashPairs(group: Group): number {
   return [...counts.values()].reduce((sum, count) => sum + (count * (count - 1)) / 2, 0);
 }
 
-/**
- * Fixes what placing one by one couldn't: swaps a player sharing their group's delegation
- * with a player of another group whenever that leaves fewer same-delegation pairs.
- * Seeds never move. Each swap strictly lowers the total, so it always ends.
- */
-function spreadDelegations(groups: Group[], fixed: Set<Player>): void {
+/** Swaps players between groups whenever that leaves fewer same-delegation pairs. */
+function spreadDelegations(groups: Group[]): void {
   let improved = true;
   while (improved) {
     improved = false;
     search: for (const first of groups) {
       if (clashPairs(first) === 0) continue;
       for (const [i, a] of first.players.entries()) {
-        if (fixed.has(a) || delegationKey(a) === '') continue;
+        if (delegationKey(a) === '') continue;
         for (const second of groups) {
           if (second === first) continue;
           for (const [j, b] of second.players.entries()) {
-            if (fixed.has(b)) continue;
             const before = clashPairs(first) + clashPairs(second);
             first.players[i] = b;
             second.players[j] = a;
@@ -264,7 +317,6 @@ function spreadDelegations(groups: Group[], fixed: Set<Player>): void {
     }
   }
 }
-
 /** Index of the set winner (0 or 1), or null if the score isn't a valid finished set. */
 export function setWinner(
   [first, second]: SetScore,

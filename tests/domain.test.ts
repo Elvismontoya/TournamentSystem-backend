@@ -103,6 +103,40 @@ describe('cantidad y tamaño de grupos', () => {
     assert.equal(new Set(all).size, 16);
   });
 
+  it('reparte en serpiente por ranking: 1→4, luego 4→1, luego 1→4…', () => {
+    // Every player from a different club, so nothing moves for delegations.
+    const players = Array.from({ length: 16 }, (_, i) => ({
+      ...player(i + 1, 2000 - i * 10),
+      delegation: `Club ${String(i + 1)}`,
+    }));
+    const groups = drawGroups(players, 4);
+    assert.deepEqual(
+      groups.map((group) => group.players.map((p) => p.bib)),
+      [
+        [1, 8, 9, 16],
+        [2, 7, 10, 15],
+        [3, 6, 11, 14],
+        [4, 5, 12, 13],
+      ],
+    );
+  });
+
+  it('en serpiente, los de la misma liga cambian de grupo con otro de su misma fila', () => {
+    // Snake would put Nr. 8 (Club 1) with Nr. 1 (Club 1) in group 1: it swaps within row 2.
+    const players = Array.from({ length: 8 }, (_, i) => ({
+      ...player(i + 1, 2000 - i * 10),
+      delegation: i + 1 === 8 ? 'Club 1' : `Club ${String(i + 1)}`,
+    }));
+    const groups = drawGroups(players, 4);
+    // Seeds stay; row 2 still holds Nr. 5-8 (one per group), with Nr. 8 away from Nr. 1.
+    assert.deepEqual(
+      groups.map((group) => group.players[0]?.bib),
+      [1, 2, 3, 4],
+    );
+    assert.deepEqual(groups.map((group) => group.players[1]?.bib).toSorted(), [5, 6, 7, 8]);
+    assert.ok(!groups[0]?.players.some((p) => p.bib === 8));
+  });
+
   describe('delegaciones repartidas', () => {
     /** Repeatable "random" numbers, to try many draws. */
     const randomFrom = (seed: number) => {

@@ -175,8 +175,14 @@ export interface CategoryView {
   seedIds: string[];
   groupStage: GroupStageView | null;
   knockout: KnockoutView | null;
-  /** Final ranking (every player who played), once the knockout is over; null before. */
+  /** Final ranking (every player who played), once the competition is over; null before. */
   ranking: RankingEntry[] | null;
+  /** A single group: no knockout, its table is the final result. */
+  singleGroup: boolean;
+  /** Winner of the competition (knockout final, or 1st of a single group). */
+  champion: Player | null;
+  /** Over: knockout decided (with 3rd place if played), or single group fully played. */
+  finished: boolean;
 }
 
 export interface TournamentView {
@@ -332,7 +338,30 @@ function knockoutOf(tournament: CategoryScope): KnockoutView | null {
 }
 
 /** Final ranking once the knockout is over (null before). */
+/** A single group has no knockout: its table is the competition's final result. */
+export function isSingleGroup(scope: Pick<CategoryScope, 'groups'>): boolean {
+  return scope.groups?.length === 1;
+}
+
+const SINGLE_GROUP_PLACES = ['Campeón', 'Subcampeón', 'Tercer puesto'];
+
+/** Final ranking of a single group, once every match is played (its table, in order). */
+function singleGroupRanking(scope: CategoryScope): RankingEntry[] | null {
+  const group = scope.groups?.at(0);
+  if (!group || !isSingleGroup(scope)) return null;
+  const rules = scope.settings.groupRules;
+  if (countFinished(group, 0, scope.results, rules) < matchCount(group)) return null;
+  return computeGroupTable(group, 0, scope.results, rules)
+    .rows.toSorted((a, b) => a.position - b.position)
+    .map((row) => ({
+      position: row.position,
+      player: row.player,
+      reached: SINGLE_GROUP_PLACES[row.position - 1] ?? 'Grupo único',
+    }));
+}
+
 function rankingOf(tournament: CategoryScope): RankingEntry[] | null {
+  if (isSingleGroup(tournament)) return singleGroupRanking(tournament);
   const { groups, results, settings } = tournament;
   const played = knockoutRoundsOf(tournament);
   if (!groups || !played) return null;
@@ -398,7 +427,7 @@ function groupStageOf(tournament: CategoryScope): GroupStageView | null {
 }
 
 /** Seeds: before the draw, the top of the ranking for the default group size; after it,
- * the best-ranked players among those in a group, one per group. None if seeding is off. */
+ * player 1 of each group. None if seeding is off. */
 function seedsOf(tournament: CategoryScope): Player[] {
   const { groups, settings } = tournament;
   if (!settings.seeded) return [];
@@ -406,10 +435,15 @@ function seedsOf(tournament: CategoryScope): Player[] {
     const players = individualPlayers(tournament.players);
     return players.slice(0, groupCountFor(players.length, settings.defaultGroupSize));
   }
-  return sortByRanking(groups.flatMap((group) => group.players)).slice(0, groups.length);
+  // The draw puts each seed first in its group (player 1): that's who heads it, even when
+  // nobody has a ranking.
+  return groups.flatMap((group) => group.players.slice(0, 1));
 }
 
 function categoryView(scope: CategoryScope, competition: Competition): CategoryView {
+  const ranking = rankingOf(scope);
+  const knockout = isSingleGroup(scope) ? null : knockoutOf(scope);
+  const singleGroup = isSingleGroup(scope);
   return {
     name: competition.key,
     category: competition.category,
@@ -417,8 +451,11 @@ function categoryView(scope: CategoryScope, competition: Competition): CategoryV
     registered: scope.players.length,
     seedIds: seedsOf(scope).map((player) => player.id),
     groupStage: groupStageOf(scope),
-    knockout: knockoutOf(scope),
-    ranking: rankingOf(scope),
+    knockout,
+    ranking,
+    singleGroup,
+    champion: singleGroup ? (ranking?.at(0)?.player ?? null) : (knockout?.champion ?? null),
+    finished: singleGroup ? ranking !== null : (knockout?.finished ?? false),
   };
 }
 

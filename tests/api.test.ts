@@ -628,6 +628,36 @@ describe('Crear torneo', () => {
     ]);
   });
 
+  it('con un grupo único no hay llaves: la tabla del grupo es el resultado final', async () => {
+    const id = '/copa-sub-13-nandu';
+    // Sub 11 has a single group of 3 (match 0 already 3-1): play the other two.
+    for (const match of [1, 2]) {
+      const path = `${id}${sub11}/grupos/0/partidos/${String(match)}/marcador`;
+      await request('PUT', path, { side: 0, value: 3 });
+      await request('PUT', path, { side: 1, value: 0 });
+    }
+    const { data } = await request('GET', id);
+    const sub11View = categoryOf(data, 'Sub 11 · Mixto') as CategoryData & {
+      finished: boolean;
+      singleGroup: boolean;
+      champion: { name: string } | null;
+      ranking: { position: number; reached: string; player: { name: string } }[] | null;
+    };
+    assert.equal(sub11View.singleGroup, true);
+    assert.equal(sub11View.finished, true);
+    const ranking = sub11View.ranking ?? [];
+    assert.deepEqual(
+      ranking.map((entry) => entry.position),
+      [1, 2, 3],
+    );
+    const [first] = ranking;
+    assert.ok(first);
+    assert.equal(first.reached, 'Campeón');
+    assert.equal(sub11View.champion?.name, first.player.name);
+    const knockout = await request('POST', `${id}${sub11}/llaves/sorteo`);
+    assert.equal(knockout.status, 409);
+  });
+
   it('las ramas también se separan: masculino y femenino juegan aparte', async () => {
     const mixedWithOthers = await request('POST', '', {
       ...wizard,
