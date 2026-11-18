@@ -527,15 +527,33 @@ describe('Crear torneo', () => {
   it('valida los obligatorios y crea el torneo con toda su configuración', async () => {
     assert.equal((await request('POST', '', { ...wizard, modalities: [] })).status, 400);
     assert.equal((await request('POST', '', { ...wizard, name: ' ' })).status, 400);
+    // Sets to 11 by 2 are fixed (table tennis rules).
+    const otherPoints = await request('POST', '', { ...wizard, gamePoints: 21 });
+    assert.equal(otherPoints.status, 400);
+    assert.match(String(otherPoints.data.error), /11 puntos con 2 de diferencia/);
+    assert.equal((await request('POST', '', { ...wizard, winMargin: 1 })).status, 400);
 
-    const created = await request('POST', '', wizard);
+    // They may be left out: 11 and 2 anyway.
+    const created = await request('POST', '', {
+      ...wizard,
+      gamePoints: undefined,
+      winMargin: undefined,
+    });
     assert.equal(created.status, 201);
     const view = created.data as {
       id: string;
       players: unknown[];
-      settings: { categories: string[]; scoring: string; qualifiersPerGroup: number };
+      settings: {
+        categories: string[];
+        scoring: string;
+        qualifiersPerGroup: number;
+        gamePoints: number;
+        winMargin: number;
+      };
     };
     assert.equal(view.id, 'copa-sub-13-nandu');
+    assert.equal(view.settings.gamePoints, 11);
+    assert.equal(view.settings.winMargin, 2);
     assert.deepEqual(view.players, []);
     assert.deepEqual(view.settings.categories, ['Sub 11', 'Sub 13']);
     assert.equal(view.settings.scoring, 'sets');

@@ -46,9 +46,10 @@ function settingsBody(data: Record<string, unknown>): service.SettingsUpdate {
     defaultGroupSize: int(data.defaultGroupSize, 'defaultGroupSize'),
     seeded: bool(data.seeded, 'seeded'),
     setsPerMatch: int(data.setsPerMatch, 'setsPerMatch'),
-    gamePoints: int(data.gamePoints, 'gamePoints'),
-    winMargin: int(data.winMargin, 'winMargin'),
     knockoutSetsPerMatch: int(data.knockoutSetsPerMatch, 'knockoutSetsPerMatch'),
+    // Fixed (11 and 2): optional, and if sent they must be those (the service checks).
+    ...(data.gamePoints === undefined ? {} : { gamePoints: int(data.gamePoints, 'gamePoints') }),
+    ...(data.winMargin === undefined ? {} : { winMargin: int(data.winMargin, 'winMargin') }),
     // Optional: left out, they keep their current value (or the default when creating).
     ...(scoring === undefined ? {} : { scoring }),
     ...(data.qualifiersPerGroup === undefined

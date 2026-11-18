@@ -147,8 +147,10 @@ export interface SettingsUpdate {
   seeded: boolean;
   scoring?: Scoring;
   setsPerMatch: number;
-  gamePoints: number;
-  winMargin: number;
+  /** Always 11 (fixed); optional, kept for clients that still send it. */
+  gamePoints?: number;
+  /** Always 2 (fixed); optional, kept for clients that still send it. */
+  winMargin?: number;
   knockoutSetsPerMatch: number;
   thirdPlaceMatch?: boolean;
   pointsWin: number;
@@ -278,13 +280,18 @@ function checkedSettings(
   const scoring = update.scoring ?? current.groupRules.scoring;
   const setsPerMatch = bestOf(update.setsPerMatch, 'Fase de grupos');
   const knockoutSetsPerMatch = bestOf(update.knockoutSetsPerMatch, 'Llaves');
-  const gamePoints = intIn(update.gamePoints, 1, 99, 'Los puntos por set van de 1 a 99.');
-  const winMargin = intIn(
-    update.winMargin,
-    1,
-    Math.min(10, gamePoints),
-    'La diferencia mínima va de 1 a 10 y no puede superar los puntos por set.',
-  );
+  // Fixed by the rules of table tennis: sets to 11 with a 2-point lead. They may be left
+  // out; sent, they must be those.
+  const { gamePoints, winMargin } = DEFAULT_RULES;
+  if (
+    (update.gamePoints !== undefined && update.gamePoints !== gamePoints) ||
+    (update.winMargin !== undefined && update.winMargin !== winMargin)
+  ) {
+    throw new HttpError(
+      400,
+      `Los sets son a ${String(gamePoints)} puntos con ${String(winMargin)} de diferencia (regla del tenis de mesa): no se pueden cambiar.`,
+    );
+  }
 
   const pointsWin = intIn(update.pointsWin, 0, 99, 'Los puntos por victoria van de 0 a 99.');
   const pointsLoss = intIn(update.pointsLoss, 0, 99, 'Los puntos por derrota van de 0 a 99.');
@@ -297,18 +304,14 @@ function checkedSettings(
   }
 
   const rules = current.groupRules;
-  const rulesChanged =
-    setsPerMatch !== rules.setsPerMatch ||
-    scoring !== rules.scoring ||
-    gamePoints !== rules.gamePoints ||
-    winMargin !== rules.winMargin;
+  const rulesChanged = setsPerMatch !== rules.setsPerMatch || scoring !== rules.scoring;
   if (
     rulesChanged &&
     anyCategory(tournament, (scope) => hasResults(scope) || knockoutStarted(scope))
   ) {
     throw new HttpError(
       409,
-      'Ya hay resultados cargados: los sets por partido, la forma de cargar resultados, los puntos por set y la diferencia mínima no se pueden cambiar.',
+      'Ya hay resultados cargados: los sets por partido y la forma de cargar resultados no se pueden cambiar.',
     );
   }
   if (
